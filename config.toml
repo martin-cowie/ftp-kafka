@@ -1,0 +1,7 @@
+[[users]]
+username = "alice"
+password = "password123"
+
+[[users]]
+username = "bob"
+password = "secret456"
