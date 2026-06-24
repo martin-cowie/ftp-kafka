@@ -9,7 +9,7 @@ An in-memory FTP server built with [libunftp](https://github.com/bolcom/libunftp
 - Each FTP session gets its own isolated in-memory storage, reset when the session ends
 - Supports upload (`STOR`), delete (`DELE`), and rename (`RNFR`/`RNTO`)
 - Downloads (`RETR`) are blocked
-- Custom `SITE TEST` command lists the names of all files in the session
+- Custom `SITE TEST` command replies with `Hello world`
 
 ## Configuration
 
@@ -49,7 +49,7 @@ lftp -u alice,password123 ftp://127.0.0.1:2121
 | `DELE <file>` | Delete a file |
 | `RNFR`/`RNTO` | Rename a file |
 | `RETR <file>` | Blocked — returns 550 Permission denied |
-| `SITE TEST` | List file names in the current session |
+| `SITE TEST` | Replies with `200 Hello world` |
 
 ### Example session
 
@@ -60,17 +60,13 @@ USER alice
 PASS password123
 230 User logged in, proceed
 SITE TEST
-213 No files
+200 Hello world
 STOR hello.txt
 226 File successfully written
-SITE TEST
-213 hello.txt
 RNFR hello.txt
 350 Tell me, what would you like the new name to be?
 RNTO world.txt
 250 Renamed
-SITE TEST
-213 world.txt
 DELE world.txt
 250 Successfully removed
 QUIT
@@ -79,6 +75,6 @@ QUIT
 
 ## Implementation notes
 
-libunftp does not expose a public API for custom `SITE` subcommands. A local copy of libunftp 0.23.0 (`libunftp-patched/`) carries a minimal patch — a `SiteTest` variant added to the command enum, a parser rule for `SITE TEST`, and an inline handler in the control loop that calls `storage.list()` and returns file names as a `213` reply.
+`SITE TEST` is implemented with a `SiteCommandHandler` registered via `ServerBuilder::site_command("TEST", SiteTestHandler)`, a generic `SITE` subcommand extension point added to a fork of libunftp at `../libunftp` (referenced via a `path` dependency rather than a vendored copy).
 
 Per-session storage isolation is achieved naturally: libunftp calls the storage factory (`|| MemStorage::new()`) once per incoming TCP connection, so each session gets a fresh, empty `HashMap`.

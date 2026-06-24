@@ -8,8 +8,8 @@ name = "ftp-server"
 path = "src/main.rs"
 
 [dependencies]
-libunftp = { path = "libunftp-patched", default-features = false, features = ["ring"] }
-unftp-core = "0.1.0"
+libunftp = { path = "../libunftp", default-features = false, features = ["ring"] }
+unftp-core = { path = "../libunftp/crates/unftp-core" }
 tokio = { version = "1", features = ["full"] }
 toml = "0.8"
 serde = { version = "1", features = ["derive"] }

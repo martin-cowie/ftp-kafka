@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(lftp -u alice,password123 -e \"site test; quit\" ftp://127.0.0.1:2121)"
+    ]
+  }
+}

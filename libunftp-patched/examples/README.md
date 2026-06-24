@@ -1,1 +1,0 @@
-For examples see the `examples` directories in the libunftp extensions bundled in the `crates` directory.
