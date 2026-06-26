@@ -60,6 +60,10 @@ impl MemStorage {
         let s = s.trim_start_matches('/');
         s.to_string()
     }
+
+    pub fn file_names(&self) -> Vec<String> {
+        self.files.lock().unwrap().keys().cloned().collect()
+    }
 }
 
 #[async_trait]

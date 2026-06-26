@@ -7,14 +7,18 @@ use libunftp::ServerBuilder;
 use libunftp::options::{Reply, ReplyCode, SiteCommandContext, SiteCommandHandler};
 use storage::MemStorage;
 use std::sync::Arc;
+use unftp_core::auth::DefaultUser;
 
 #[derive(Debug)]
 struct SiteTestHandler;
 
 #[async_trait]
-impl SiteCommandHandler for SiteTestHandler {
-    async fn handle(&self, _context: SiteCommandContext) -> Reply {
-        Reply::new(ReplyCode::CommandOkay, "Hello world")
+impl SiteCommandHandler<MemStorage, DefaultUser> for SiteTestHandler {
+    async fn handle(&self, context: &SiteCommandContext<MemStorage, DefaultUser>) -> Reply {
+        let username = context.username.as_deref().unwrap_or("anon");
+        let mut lines = vec![format!("Hello {username}")];
+        lines.extend(context.storage.file_names().into_iter().map(|name| name.to_uppercase()));
+        Reply::new_multiline(ReplyCode::CommandOkay, lines)
     }
 }
 
@@ -27,7 +31,7 @@ async fn main() {
         Box::new(|| MemStorage::new()),
         Arc::new(authenticator),
     )
-    .greeting("this is a test FTP server")
+    .greeting("This is a test FTP server")
     .passive_ports(50000..=65535)
     .site_command("TEST", SiteTestHandler)
     .build()

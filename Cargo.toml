@@ -8,10 +8,10 @@ name = "ftp-server"
 path = "src/main.rs"
 
 [dependencies]
-libunftp = { path = "../libunftp", default-features = false, features = ["ring"] }
-unftp-core = { path = "../libunftp/crates/unftp-core" }
+libunftp = { git = "https://github.com/martin-cowie/libunftp", branch = "site-commands", default-features = false, features = ["ring"] }
+unftp-core = { git = "https://github.com/martin-cowie/libunftp", branch = "site-commands" }
 tokio = { version = "1", features = ["full"] }
-toml = "0.8"
+toml = "1.1.2"
 serde = { version = "1", features = ["derive"] }
 async-trait = "0.1"
 bytes = "1"
