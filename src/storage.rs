@@ -55,6 +55,7 @@ impl MemStorage {
         }
     }
 
+    /// Remove any `/` prefix
     fn normalize(path: &Path) -> String {
         let s = path.to_string_lossy();
         let s = s.trim_start_matches('/');
@@ -121,10 +122,18 @@ impl StorageBackend<DefaultUser> for MemStorage {
     async fn get<P: AsRef<Path> + Send + fmt::Debug>(
         &self,
         _user: &DefaultUser,
-        _path: P,
-        _start_pos: u64,
+        path: P,
+        start_pos: u64,
     ) -> Result<Box<dyn AsyncRead + Send + Sync + Unpin>, Error> {
-        Err(Error::new(ErrorKind::PermissionDenied, "Downloads are not permitted"))
+        let path = Self::normalize(path.as_ref());
+        let files = self.files.lock().unwrap();
+        match files.get(&path) {
+            Some(data) => {
+                let start = (start_pos as usize).min(data.len());
+                Ok(Box::new(std::io::Cursor::new(data[start..].to_vec())))
+            }
+            None => Err(Error::new(ErrorKind::PermanentFileNotAvailable, "File not found")),
+        }
     }
 
     async fn put<P, R>(

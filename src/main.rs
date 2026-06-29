@@ -10,8 +10,10 @@ use rdkafka::config::ClientConfig;
 use rdkafka::producer::{FutureProducer, FutureRecord};
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::io::AsyncReadExt;
 use storage::MemStorage;
 use unftp_core::auth::DefaultUser;
+use unftp_core::storage::StorageBackend;
 
 const BROKERS: &str = "localhost:9092";
 const TOPIC: &str = "rust-topic";
@@ -40,7 +42,19 @@ impl SiteCommandHandler<MemStorage, DefaultUser> for KafkaSendHandler {
             return Reply::new(ReplyCode::ParameterSyntaxError, "Missing file name");
         };
 
-        let payload = String::from("pretend file content");
+        let Some(user) = context.user.as_ref() else {
+            return Reply::new(ReplyCode::NotLoggedIn, "Not logged in");
+        };
+
+        let mut reader = match context.storage.get(user, file_name, 0).await {
+            Ok(reader) => reader,
+            Err(e) => return Reply::new(ReplyCode::LocalError, &format!("{:?}", e)),
+        };
+
+        let mut payload = Vec::new();
+        if let Err(e) = reader.read_to_end(&mut payload).await {
+            return Reply::new(ReplyCode::LocalError, &format!("{:?}", e));
+        };
 
         let producer: &FutureProducer = &ClientConfig::new()
             .set("bootstrap.servers", BROKERS)
