@@ -34,7 +34,11 @@ impl TomlAuthenticator {
 
 #[async_trait]
 impl Authenticator for TomlAuthenticator {
-    async fn authenticate(&self, username: &str, creds: &Credentials) -> Result<Principal, AuthenticationError> {
+    async fn authenticate(
+        &self,
+        username: &str,
+        creds: &Credentials,
+    ) -> Result<Principal, AuthenticationError> {
         match &creds.password {
             Some(password) => match self.users.get(username) {
                 Some(stored) if stored == password => Ok(Principal {

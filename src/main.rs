@@ -9,8 +9,8 @@ use rdkafka::config::ClientConfig;
 use rdkafka::producer::{FutureProducer, FutureRecord};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::AsyncReadExt;
 use storage::MemStorage;
+use tokio::io::AsyncReadExt;
 use unftp_core::auth::DefaultUser;
 use unftp_core::storage::StorageBackend;
 
@@ -25,7 +25,13 @@ impl SiteCommandHandler<MemStorage, DefaultUser> for SiteTestHandler {
     async fn handle(&self, context: &SiteCommandContext<MemStorage, DefaultUser>) -> Reply {
         let username = context.username.as_deref().unwrap_or("anon");
         let mut lines = vec![format!("Hello {username}")];
-        lines.extend(context.storage.file_names().into_iter().map(|name| name.to_uppercase()));
+        lines.extend(
+            context
+                .storage
+                .file_names()
+                .into_iter()
+                .map(|name| name.to_uppercase()),
+        );
         Reply::new_multiline(ReplyCode::CommandOkay, lines)
     }
 }
@@ -67,13 +73,14 @@ impl SiteCommandHandler<MemStorage, DefaultUser> for KafkaSendHandler {
         slog::info!(context.logger, "Connected to {}", BROKERS);
 
         // Prepare the message
-        let message = FutureRecord::to(TOPIC)
-            .key(file_name)
-            .payload(&payload);
+        let message = FutureRecord::to(TOPIC).key(file_name).payload(&payload);
 
         // Send the message
-        match producer.send(message, Duration::from_secs(0),).await {
-            Ok(_) => Reply::new(ReplyCode::CommandOkay, &format!("Send message to {} on {}", TOPIC, BROKERS)),
+        match producer.send(message, Duration::from_secs(0)).await {
+            Ok(_) => Reply::new(
+                ReplyCode::CommandOkay,
+                &format!("Send message to {} on {}", TOPIC, BROKERS),
+            ),
             Err((kerr, _)) => Reply::new(ReplyCode::LocalError, &format!("{:?}", kerr)),
         }
     }
@@ -81,19 +88,17 @@ impl SiteCommandHandler<MemStorage, DefaultUser> for KafkaSendHandler {
 
 #[tokio::main]
 async fn main() {
-    let authenticator = TomlAuthenticator::from_file("config.toml")
-        .expect("Failed to load config.toml");
+    let authenticator =
+        TomlAuthenticator::from_file("config.toml").expect("Failed to load config.toml");
 
-    let server = ServerBuilder::with_authenticator(
-        Box::new(|| MemStorage::new()),
-        Arc::new(authenticator),
-    )
-        .greeting("This is a test FTP server")
-        .passive_ports(50000..=65535)
-        .site_command("test", SiteTestHandler)
-        .site_command("send", KafkaSendHandler)
-        .build()
-        .expect("Failed to build FTP server");
+    let server =
+        ServerBuilder::with_authenticator(Box::new(|| MemStorage::new()), Arc::new(authenticator))
+            .greeting("This is a test FTP server")
+            .passive_ports(50000..=65535)
+            .site_command("test", SiteTestHandler)
+            .site_command("send", KafkaSendHandler)
+            .build()
+            .expect("Failed to build FTP server");
 
     println!("FTP server listening on 0.0.0.0:2121");
     server.listen("0.0.0.0:2121").await.expect("Server error");

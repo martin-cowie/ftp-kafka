@@ -91,7 +91,10 @@ impl StorageBackend<DefaultUser> for MemStorage {
                 is_dir: false,
                 modified: SystemTime::now(),
             }),
-            None => Err(Error::new(ErrorKind::PermanentFileNotAvailable, "File not found")),
+            None => Err(Error::new(
+                ErrorKind::PermanentFileNotAvailable,
+                "File not found",
+            )),
         }
     }
 
@@ -102,7 +105,10 @@ impl StorageBackend<DefaultUser> for MemStorage {
     ) -> Result<Vec<Fileinfo<PathBuf, MemMetadata>>, Error> {
         let key = Self::normalize(path.as_ref());
         if !key.is_empty() {
-            return Err(Error::new(ErrorKind::PermanentDirectoryNotAvailable, "Not a directory"));
+            return Err(Error::new(
+                ErrorKind::PermanentDirectoryNotAvailable,
+                "Not a directory",
+            ));
         }
         let files = self.files.lock().unwrap();
         let entries = files
@@ -132,7 +138,10 @@ impl StorageBackend<DefaultUser> for MemStorage {
                 let start = (start_pos as usize).min(data.len());
                 Ok(Box::new(std::io::Cursor::new(data[start..].to_vec())))
             }
-            None => Err(Error::new(ErrorKind::PermanentFileNotAvailable, "File not found")),
+            None => Err(Error::new(
+                ErrorKind::PermanentFileNotAvailable,
+                "File not found",
+            )),
         }
     }
 
@@ -149,7 +158,10 @@ impl StorageBackend<DefaultUser> for MemStorage {
     {
         let key = Self::normalize(path.as_ref());
         if key.is_empty() {
-            return Err(Error::new(ErrorKind::PermanentFileNotAvailable, "Invalid path"));
+            return Err(Error::new(
+                ErrorKind::PermanentFileNotAvailable,
+                "Invalid path",
+            ));
         }
         let mut buf = Vec::new();
         input
@@ -171,7 +183,10 @@ impl StorageBackend<DefaultUser> for MemStorage {
         if files.remove(&key).is_some() {
             Ok(())
         } else {
-            Err(Error::new(ErrorKind::PermanentFileNotAvailable, "File not found"))
+            Err(Error::new(
+                ErrorKind::PermanentFileNotAvailable,
+                "File not found",
+            ))
         }
     }
 
@@ -180,7 +195,10 @@ impl StorageBackend<DefaultUser> for MemStorage {
         _user: &DefaultUser,
         _path: P,
     ) -> Result<(), Error> {
-        Err(Error::new(ErrorKind::CommandNotImplemented, "Directories not supported"))
+        Err(Error::new(
+            ErrorKind::CommandNotImplemented,
+            "Directories not supported",
+        ))
     }
 
     async fn rename<P: AsRef<Path> + Send + fmt::Debug>(
@@ -197,7 +215,10 @@ impl StorageBackend<DefaultUser> for MemStorage {
                 files.insert(to_key, data);
                 Ok(())
             }
-            None => Err(Error::new(ErrorKind::PermanentFileNotAvailable, "File not found")),
+            None => Err(Error::new(
+                ErrorKind::PermanentFileNotAvailable,
+                "File not found",
+            )),
         }
     }
 
@@ -206,7 +227,10 @@ impl StorageBackend<DefaultUser> for MemStorage {
         _user: &DefaultUser,
         _path: P,
     ) -> Result<(), Error> {
-        Err(Error::new(ErrorKind::CommandNotImplemented, "Directories not supported"))
+        Err(Error::new(
+            ErrorKind::CommandNotImplemented,
+            "Directories not supported",
+        ))
     }
 
     async fn cwd<P: AsRef<Path> + Send + fmt::Debug>(
@@ -218,7 +242,10 @@ impl StorageBackend<DefaultUser> for MemStorage {
         if key.is_empty() {
             Ok(())
         } else {
-            Err(Error::new(ErrorKind::PermanentDirectoryNotAvailable, "Only root directory supported"))
+            Err(Error::new(
+                ErrorKind::PermanentDirectoryNotAvailable,
+                "Only root directory supported",
+            ))
         }
     }
 }
