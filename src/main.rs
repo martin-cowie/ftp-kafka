@@ -6,7 +6,6 @@ use auth::TomlAuthenticator;
 use libunftp::options::{Reply, ReplyCode, SiteCommandContext, SiteCommandHandler};
 use libunftp::ServerBuilder;
 use rdkafka::config::ClientConfig;
-// use rdkafka::message::{Header, OwnedHeaders};
 use rdkafka::producer::{FutureProducer, FutureRecord};
 use std::sync::Arc;
 use std::time::Duration;
@@ -37,11 +36,13 @@ struct KafkaSendHandler;
 #[async_trait]
 impl SiteCommandHandler<MemStorage, DefaultUser> for KafkaSendHandler {
     async fn handle(&self, context: &SiteCommandContext<MemStorage, DefaultUser>) -> Reply {
+        // Get and verify argument
         let mut args = context.arguments.split(' ');
-        let (Some(file_name), None) = (args.next(), args.next()) else {
+        let Some(file_name) = args.next().filter(|name| !name.is_empty()) else {
             return Reply::new(ReplyCode::ParameterSyntaxError, "Missing file name");
         };
 
+        // Prepare args to get file content
         let Some(user) = context.user.as_ref() else {
             return Reply::new(ReplyCode::NotLoggedIn, "Not logged in");
         };
@@ -51,11 +52,13 @@ impl SiteCommandHandler<MemStorage, DefaultUser> for KafkaSendHandler {
             Err(e) => return Reply::new(ReplyCode::LocalError, &format!("{:?}", e)),
         };
 
+        // Get the file content
         let mut payload = Vec::new();
         if let Err(e) = reader.read_to_end(&mut payload).await {
             return Reply::new(ReplyCode::LocalError, &format!("{:?}", e));
         };
 
+        // Connect to Kafka
         let producer: &FutureProducer = &ClientConfig::new()
             .set("bootstrap.servers", BROKERS)
             .set("message.timeout.ms", "5000")
@@ -63,11 +66,12 @@ impl SiteCommandHandler<MemStorage, DefaultUser> for KafkaSendHandler {
             .expect("Producer creation error");
         slog::info!(context.logger, "Connected to {}", BROKERS);
 
-        // let payload = format!("Message {}", 42);
+        // Prepare the message
         let message = FutureRecord::to(TOPIC)
             .key(file_name)
             .payload(&payload);
 
+        // Send the message
         match producer.send(message, Duration::from_secs(0),).await {
             Ok(_) => Reply::new(ReplyCode::CommandOkay, &format!("Send message to {} on {}", TOPIC, BROKERS)),
             Err((kerr, _)) => Reply::new(ReplyCode::LocalError, &format!("{:?}", kerr)),
