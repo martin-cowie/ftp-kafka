@@ -15,3 +15,5 @@ toml = "1.1.2"
 serde = { version = "1", features = ["derive"] }
 async-trait = "0.1"
 bytes = "1"
+rdkafka = "0.39.0"
+slog = "2"
