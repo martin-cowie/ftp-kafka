@@ -77,9 +77,9 @@ impl SiteCommandHandler<MemStorage, DefaultUser> for KafkaSendHandler {
 
         // Send the message
         match producer.send(message, Duration::from_secs(0)).await {
-            Ok(_) => Reply::new(
+            Ok(delivery) => Reply::new(
                 ReplyCode::CommandOkay,
-                &format!("Send message to {} on {}", TOPIC, BROKERS),
+                &format!("Sent file \"{}\" as message to {}. {:?}", file_name, TOPIC, delivery),
             ),
             Err((kerr, _)) => Reply::new(ReplyCode::LocalError, &format!("{:?}", kerr)),
         }
