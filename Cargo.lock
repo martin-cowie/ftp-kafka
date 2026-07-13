@@ -414,6 +414,7 @@ dependencies = [
  "libunftp",
  "rdkafka",
  "serde",
+ "shlex",
  "slog",
  "slog-async",
  "slog-term",

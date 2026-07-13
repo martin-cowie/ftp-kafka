@@ -14,6 +14,7 @@ clap = { version = "4.6.1", features = ["derive"] }
 libunftp = { git = "https://github.com/martin-cowie/libunftp", branch = "site-commands", default-features = false, features = ["ring"] }
 rdkafka = "0.39.0"
 serde = { version = "1", features = ["derive"] }
+shlex = "2.0.1"
 slog = "2"
 slog-async = "2.8.0"
 slog-term = "2.9.2"

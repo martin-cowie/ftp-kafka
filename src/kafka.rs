@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use clap::Parser;
 use libunftp::options::{Reply, ReplyCode, SiteCommandContext, SiteCommandHandler};
 use rdkafka::config::ClientConfig;
 use rdkafka::producer::{FutureProducer, FutureRecord};
@@ -9,8 +10,44 @@ use unftp_core::storage::StorageBackend;
 
 use crate::storage::MemStorage;
 
+//FIXME: push to server/principal configuration
 const BROKERS: &str = "localhost:9092";
-const TOPIC: &str = "rust-topic";
+const DEFAULT_TOPIC: &str = "rust-topic"; 
+
+// MARK: Options
+
+#[derive(Parser, Debug)]
+#[command(no_binary_name = true)]
+struct SendArgs {
+    /// Kafka topic to publish to
+    #[arg(long, default_value = DEFAULT_TOPIC)]
+    topic: String,
+
+    /// Kafka message key (defaults to each file's name)
+    #[arg(long)]
+    key: Option<String>,
+
+    file_names: Vec<String>,
+}
+
+impl SendArgs {
+    fn parse(raw: &str) -> Result<Self, Reply> {
+        let Some(tokens) = shlex::split(raw) else {
+            return Err(Reply::new(
+                ReplyCode::ParameterSyntaxError,
+                "Unbalanced quotes in arguments",
+            ));
+        };
+        let args = Self::try_parse_from(tokens)
+            .map_err(|e| Reply::new(ReplyCode::ParameterSyntaxError, &e.to_string()))?;
+        if args.file_names.is_empty() {
+            return Err(Reply::new(ReplyCode::ParameterSyntaxError, "Missing file names"));
+        }
+        Ok(args)
+    }
+}
+
+// MARK: Implementation
 
 #[derive(Debug)]
 pub struct KafkaSendHandler;
@@ -19,14 +56,10 @@ pub struct KafkaSendHandler;
 impl SiteCommandHandler<MemStorage, DefaultUser> for KafkaSendHandler {
     async fn handle(&self, context: &SiteCommandContext<MemStorage, DefaultUser>) -> Reply {
         // Get and verify arguments
-        let file_names: Vec<&str> = context
-            .arguments
-            .split(' ')
-            .filter(|name| !name.is_empty())
-            .collect();
-        if file_names.is_empty() {
-            return Reply::new(ReplyCode::ParameterSyntaxError, "Missing file names");
-        }
+        let args = match SendArgs::parse(&context.arguments) {
+            Ok(args) => args,
+            Err(reply) => return reply,
+        };
 
         // Prepare args to get file content
         let Some(user) = context.user.as_ref() else {
@@ -44,7 +77,8 @@ impl SiteCommandHandler<MemStorage, DefaultUser> for KafkaSendHandler {
         // Send each file as a discrete message
         let mut results = Vec::new();
         let mut all_ok = true;
-        for file_name in file_names {
+        for file_name in &args.file_names {
+            //FIXME: unnecessary copy
             let mut reader = match context.storage.get(user, file_name, 0).await {
                 Ok(reader) => reader,
                 Err(e) => {
@@ -61,11 +95,12 @@ impl SiteCommandHandler<MemStorage, DefaultUser> for KafkaSendHandler {
                 continue;
             };
 
-            let message = FutureRecord::to(TOPIC).key(file_name).payload(&payload);
+            let key = args.key.as_deref().unwrap_or(file_name);
+            let message = FutureRecord::to(&args.topic).key(key).payload(&payload);
             match producer.send(message, Duration::from_secs(0)).await {
                 Ok(delivery) => results.push(format!(
                     "Sent file \"{}\" as message to {}. {:?}",
-                    file_name, TOPIC, delivery
+                    file_name, args.topic, delivery
                 )),
                 Err((kerr, _)) => {
                     results.push(format!("\"{}\": {:?}", file_name, kerr));
@@ -80,5 +115,59 @@ impl SiteCommandHandler<MemStorage, DefaultUser> for KafkaSendHandler {
             ReplyCode::LocalError
         };
         Reply::new_multiline(reply_code, results)
+    }
+}
+
+// MARK: Tests
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_plain_file_names() {
+        let args = SendArgs::parse("file1.txt file2.txt").unwrap();
+        assert_eq!(args.file_names, vec!["file1.txt", "file2.txt"]);
+        assert_eq!(args.topic, DEFAULT_TOPIC);
+        assert_eq!(args.key, None);
+    }
+
+    #[test]
+    fn parses_quoted_file_name_with_embedded_spaces() {
+        let args = SendArgs::parse("\"my file.txt\"").unwrap();
+        assert_eq!(args.file_names, vec!["my file.txt"]);
+    }
+
+    #[test]
+    fn parses_topic_and_key_alongside_quoted_file_names() {
+        let args =
+            SendArgs::parse("--topic my-topic --key my-key \"my file.txt\" other.txt").unwrap();
+        assert_eq!(args.topic, "my-topic");
+        assert_eq!(args.key, Some("my-key".to_string()));
+        assert_eq!(args.file_names, vec!["my file.txt", "other.txt"]);
+    }
+
+    #[test]
+    fn rejects_unbalanced_quotes() {
+        let err = SendArgs::parse("\"unterminated").unwrap_err();
+        assert!(matches!(
+            err,
+            Reply::CodeAndMsg {
+                code: ReplyCode::ParameterSyntaxError,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn rejects_missing_file_names() {
+        let err = SendArgs::parse("--topic my-topic").unwrap_err();
+        assert!(matches!(
+            err,
+            Reply::CodeAndMsg {
+                code: ReplyCode::ParameterSyntaxError,
+                ..
+            }
+        ));
     }
 }
