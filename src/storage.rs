@@ -62,6 +62,7 @@ impl MemStorage {
         s.to_string()
     }
 
+    #[allow(dead_code)]
     pub fn file_names(&self) -> Vec<String> {
         self.files.lock().unwrap().keys().cloned().collect()
     }
