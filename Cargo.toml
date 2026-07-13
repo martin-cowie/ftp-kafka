@@ -10,7 +10,7 @@ path = "src/main.rs"
 [dependencies]
 async-trait = "0.1"
 bytes = "1"
-clap = "4.6.1"
+clap = { version = "4.6.1", features = ["derive"] }
 libunftp = { git = "https://github.com/martin-cowie/libunftp", branch = "site-commands", default-features = false, features = ["ring"] }
 rdkafka = "0.39.0"
 serde = { version = "1", features = ["derive"] }
