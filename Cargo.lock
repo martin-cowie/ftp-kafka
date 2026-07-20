@@ -602,7 +602,7 @@ checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
 [[package]]
 name = "libunftp"
 version = "0.23.0"
-source = "git+https://github.com/martin-cowie/libunftp?branch=site-commands#f7e74a5dc039cb62fdff372aa6fa4ae969ce1cd6"
+source = "git+https://github.com/bolcom/libunftp?branch=master#d831218892a4aab69b4645684de4d2bb5fd67599"
 dependencies = [
  "async-trait",
  "bitflags",
@@ -1410,7 +1410,7 @@ checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 [[package]]
 name = "unftp-core"
 version = "0.1.0"
-source = "git+https://github.com/martin-cowie/libunftp?branch=site-commands#f7e74a5dc039cb62fdff372aa6fa4ae969ce1cd6"
+source = "git+https://github.com/bolcom/libunftp?branch=master#d831218892a4aab69b4645684de4d2bb5fd67599"
 dependencies = [
  "async-trait",
  "chrono",
