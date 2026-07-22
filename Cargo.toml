@@ -7,6 +7,12 @@ edition = "2021"
 name = "ftp-server"
 path = "src/main.rs"
 
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+
 [dependencies]
 async-trait = "0.1"
 bytes = "1"
