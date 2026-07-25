@@ -24,6 +24,6 @@ shlex = "2.0.1"
 slog = "2"
 slog-async = "2.8.0"
 slog-term = "2.9.2"
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "io-util", "sync", "time"] }
 toml = "1.1.2"
 unftp-core = { git = "https://github.com/bolcom/libunftp", branch = "master" }
