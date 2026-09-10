@@ -131,6 +131,48 @@ impl SiteCommandHandler<MemStorage, DefaultUser> for KafkaSendHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+
+    use crate::storage::MemStorage;
+
+    fn context(arguments: &str, user: Option<DefaultUser>, storage: MemStorage) -> SiteCommandContext<MemStorage, DefaultUser> {
+        SiteCommandContext {
+            command: "SEND".to_string(),
+            arguments: arguments.to_string(),
+            username: user.as_ref().map(|_| "alice".to_string()),
+            storage: Arc::new(storage),
+            user: Arc::new(user),
+            storage_features: 0,
+            logger: slog::Logger::root(slog::Discard, slog::o!()),
+        }
+    }
+
+    fn is_code(reply: &Reply, expected: ReplyCode) -> bool {
+        matches!(reply, Reply::CodeAndMsg { code, .. } if *code == expected)
+            || matches!(reply, Reply::MultiLine { code, .. } if *code == expected)
+    }
+
+    #[tokio::test]
+    async fn handle_rejects_missing_file_names_without_touching_storage_or_kafka() {
+        let ctx = context("", None, MemStorage::new());
+        let reply = KafkaSendHandler.handle(&ctx).await;
+        assert!(is_code(&reply, ReplyCode::ParameterSyntaxError));
+    }
+
+    #[tokio::test]
+    async fn handle_rejects_when_not_logged_in() {
+        let ctx = context("hello.txt", None, MemStorage::new());
+        let reply = KafkaSendHandler.handle(&ctx).await;
+        assert!(is_code(&reply, ReplyCode::NotLoggedIn));
+    }
+
+    #[tokio::test]
+    async fn handle_reports_missing_files_per_name_without_a_reachable_broker() {
+        let ctx = context("missing.txt", Some(DefaultUser), MemStorage::new());
+        let reply = KafkaSendHandler.handle(&ctx).await;
+        assert!(is_code(&reply, ReplyCode::LocalError));
+    }
+
 
     #[test]
     fn parses_plain_file_names() {
