@@ -67,11 +67,19 @@ impl SiteCommandHandler<MemStorage, DefaultUser> for KafkaSendHandler {
         };
 
         // Connect to Kafka
-        let producer: &FutureProducer = &ClientConfig::new()
+        let producer: FutureProducer = match ClientConfig::new()
             .set("bootstrap.servers", BROKERS)
             .set("message.timeout.ms", "5000")
             .create()
-            .expect("Producer creation error");
+        {
+            Ok(producer) => producer,
+            Err(e) => {
+                return Reply::new(
+                    ReplyCode::LocalError,
+                    &format!("Cannot connect to Kafka broker {}: {}", BROKERS, e),
+                );
+            }
+        };
         slog::info!(context.logger, "Connected to {}", BROKERS);
 
         // Send each file as a discrete message
