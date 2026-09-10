@@ -80,6 +80,30 @@ QUIT
 221 bye
 ```
 
+## Testing
+
+```sh
+cargo test
+```
+
+Runs the unit tests (in `src/`) and a black-box integration suite (`tests/ftp_integration.rs`) that
+spawns the real `ftp-server` binary and drives it as an FTP client would, over TCP. Neither needs any
+external services.
+
+A further end-to-end test, `tests/kafka_integration.rs`, exercises `SITE SEND` against a real Kafka
+broker started via [testcontainers](https://testcontainers.com/). It requires a working Docker daemon,
+so it's excluded from the default run:
+
+```sh
+cargo test --test kafka_integration -- --ignored
+```
+
+To check coverage (via [cargo-llvm-cov](https://github.com/taiki-e/cargo-llvm-cov)):
+
+```sh
+cargo llvm-cov --show-missing-lines
+```
+
 ## Implementation notes
 
 `SITE SEND` is implemented with a `SiteCommandHandler` registered via
