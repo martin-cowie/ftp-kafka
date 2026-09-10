@@ -76,7 +76,7 @@ impl SiteCommandHandler<MemStorage, DefaultUser> for KafkaSendHandler {
             Err(e) => {
                 return Reply::new(
                     ReplyCode::LocalError,
-                    &format!("Failed to connect to Kafka broker {}: {}", BROKERS, e),
+                    &format!("Cannot connect to Kafka broker {}: {}", BROKERS, e),
                 );
             }
         };

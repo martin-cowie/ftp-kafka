@@ -36,7 +36,7 @@ async fn main() {
             .passive_ports(50000..=65535)
             .site_command("send", KafkaSendHandler)
             .build()
-            .expect("Failed to build FTP server");
+            .expect("Cannot build FTP server");
 
     let bind_address = format!("0.0.0.0:{}", cli.port);
     slog::info!(logger, "FTP server listening on {}", bind_address);
