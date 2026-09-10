@@ -3,7 +3,7 @@ name = "ftp-server"
 version = "0.1.0"
 edition = "2021"
 description = "An in-memory FTP server that publishes uploaded files to Kafka via a custom SITE SEND command"
-license = "MIT"
+license = "Apache-2.0"
 repository = "https://github.com/martin-cowie/ftp-kafka"
 
 [[bin]]
