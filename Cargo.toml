@@ -30,3 +30,6 @@ slog-term = "2.9.2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "io-util", "sync", "time"] }
 toml = "1.1.2"
 unftp-core = { git = "https://github.com/bolcom/libunftp", branch = "master" }
+
+[dev-dependencies]
+tempfile = "3.27.0"
