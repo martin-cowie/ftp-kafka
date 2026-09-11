@@ -14,9 +14,14 @@ uploaded files to [Kafka](https://kafka.apache.org/) on request.
 
 ## Configuration
 
-Users are defined in `config.toml`:
+Users and Kafka settings are defined in `config.toml`:
 
 ```toml
+[kafka]
+brokers = "localhost:9092"
+default_topic = "rust-topic"
+message_timeout_ms = 5000
+
 [[users]]
 username = "alice"
 password = "password123"
@@ -26,14 +31,16 @@ username = "bob"
 password = "secret456"
 ```
 
+The `[kafka]` table is optional — any field left out (or the whole table) falls back to the defaults
+shown above.
+
 ## Running
 
 ```sh
 cargo run
 ```
 
-The server listens on `0.0.0.0:2121`. Passive mode ports are `50000–65535`. Kafka messages are sent
-to a broker at `localhost:9092`.
+The server listens on `0.0.0.0:2121`. Passive mode ports are `50000–65535`.
 
 ## Usage
 
@@ -54,7 +61,7 @@ lftp -u alice,password123 ftp://127.0.0.1:2121
 | `SITE SEND [--topic <topic>] [--key <key>] <file>...` | Publish one or more uploaded files to Kafka |
 
 `SITE SEND` publishes each named file as a separate Kafka message. `--topic` defaults to
-`rust-topic`; `--key` defaults to each file's name.
+`config.toml`'s `[kafka] default_topic`; `--key` defaults to each file's name.
 
 ### Example session
 

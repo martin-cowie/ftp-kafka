@@ -1,3 +1,8 @@
+[kafka]
+brokers = "localhost:9092"
+default_topic = "rust-topic"
+message_timeout_ms = 5000
+
 [[users]]
 username = "alice"
 password = "password123"
