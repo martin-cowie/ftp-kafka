@@ -55,26 +55,11 @@ impl Authenticator for TomlAuthenticator {
 mod tests {
     use super::*;
 
-    struct TempTomlFile {
-        path: std::path::PathBuf,
-    }
-
-    impl TempTomlFile {
-        fn new(name: &str, content: &str) -> Self {
-            let path = std::env::temp_dir().join(format!("ftp-kafka-auth-test-{}.toml", name));
-            std::fs::write(&path, content).unwrap();
-            TempTomlFile { path }
-        }
-
-        fn path(&self) -> &str {
-            self.path.to_str().unwrap()
-        }
-    }
-
-    impl Drop for TempTomlFile {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_file(&self.path);
-        }
+    /// Writes `content` to a uniquely-named temp file, cleaned up on drop.
+    fn temp_toml(content: &str) -> tempfile::NamedTempFile {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        std::io::Write::write_all(&mut file, content.as_bytes()).unwrap();
+        file
     }
 
     fn creds(password: Option<&str>) -> Credentials {
@@ -89,8 +74,7 @@ mod tests {
 
     #[test]
     fn from_file_loads_configured_users() {
-        let file = TempTomlFile::new(
-            "loads",
+        let file = temp_toml(
             r#"
                 [[users]]
                 username = "alice"
@@ -102,7 +86,7 @@ mod tests {
             "#,
         );
 
-        let auth = TomlAuthenticator::from_file(file.path()).unwrap();
+        let auth = TomlAuthenticator::from_file(file.path().to_str().unwrap()).unwrap();
         assert_eq!(auth.users.len(), 2);
         assert_eq!(auth.users.get("alice").map(String::as_str), Some("password123"));
     }
@@ -115,22 +99,21 @@ mod tests {
 
     #[test]
     fn from_file_fails_on_malformed_toml() {
-        let file = TempTomlFile::new("malformed", "not valid toml [[[");
-        let result = TomlAuthenticator::from_file(file.path());
+        let file = temp_toml("not valid toml [[[");
+        let result = TomlAuthenticator::from_file(file.path().to_str().unwrap());
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn authenticate_succeeds_with_correct_password() {
-        let file = TempTomlFile::new(
-            "correct",
+        let file = temp_toml(
             r#"
                 [[users]]
                 username = "alice"
                 password = "password123"
             "#,
         );
-        let auth = TomlAuthenticator::from_file(file.path()).unwrap();
+        let auth = TomlAuthenticator::from_file(file.path().to_str().unwrap()).unwrap();
 
         let principal = auth.authenticate("alice", &creds(Some("password123"))).await.unwrap();
         assert_eq!(principal.username, "alice");
@@ -138,15 +121,14 @@ mod tests {
 
     #[tokio::test]
     async fn authenticate_fails_with_wrong_password() {
-        let file = TempTomlFile::new(
-            "wrong-password",
+        let file = temp_toml(
             r#"
                 [[users]]
                 username = "alice"
                 password = "password123"
             "#,
         );
-        let auth = TomlAuthenticator::from_file(file.path()).unwrap();
+        let auth = TomlAuthenticator::from_file(file.path().to_str().unwrap()).unwrap();
 
         let result = auth.authenticate("alice", &creds(Some("wrong"))).await;
         assert!(matches!(result, Err(AuthenticationError::BadPassword)));
@@ -154,15 +136,14 @@ mod tests {
 
     #[tokio::test]
     async fn authenticate_fails_with_unknown_user() {
-        let file = TempTomlFile::new(
-            "unknown-user",
+        let file = temp_toml(
             r#"
                 [[users]]
                 username = "alice"
                 password = "password123"
             "#,
         );
-        let auth = TomlAuthenticator::from_file(file.path()).unwrap();
+        let auth = TomlAuthenticator::from_file(file.path().to_str().unwrap()).unwrap();
 
         let result = auth.authenticate("mallory", &creds(Some("password123"))).await;
         assert!(matches!(result, Err(AuthenticationError::BadPassword)));
@@ -170,15 +151,14 @@ mod tests {
 
     #[tokio::test]
     async fn authenticate_fails_without_password() {
-        let file = TempTomlFile::new(
-            "no-password",
+        let file = temp_toml(
             r#"
                 [[users]]
                 username = "alice"
                 password = "password123"
             "#,
         );
-        let auth = TomlAuthenticator::from_file(file.path()).unwrap();
+        let auth = TomlAuthenticator::from_file(file.path().to_str().unwrap()).unwrap();
 
         let result = auth.authenticate("alice", &creds(None)).await;
         assert!(matches!(result, Err(AuthenticationError::BadPassword)));
