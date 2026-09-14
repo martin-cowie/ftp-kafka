@@ -1,7 +1,7 @@
 [[users]]
 username = "alice"
-password = "password123"
+password = "changeme"
 
 [[users]]
 username = "bob"
-password = "secret456"
+password = "changeme"

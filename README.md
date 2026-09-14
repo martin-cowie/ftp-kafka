@@ -14,17 +14,24 @@ uploaded files to [Kafka](https://kafka.apache.org/) on request.
 
 ## Configuration
 
-Users are defined in `config.toml`:
+Users are defined in `config.toml`, which is not committed to this repository (it's listed in
+`.gitignore` since it holds plaintext passwords). Copy the example to get started:
+
+```sh
+cp config.toml.example config.toml
+```
 
 ```toml
 [[users]]
 username = "alice"
-password = "password123"
+password = "changeme"
 
 [[users]]
 username = "bob"
-password = "secret456"
+password = "changeme"
 ```
+
+Edit `config.toml` to set your own usernames and passwords.
 
 ## Running
 
