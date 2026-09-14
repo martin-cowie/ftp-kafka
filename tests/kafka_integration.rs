@@ -22,7 +22,7 @@ use rdkafka::message::Message;
 use rdkafka::ClientConfig;
 use testcontainers::runners::AsyncRunner;
 use testcontainers::ImageExt;
-use testcontainers_modules::kafka::{Kafka, KAFKA_PORT};
+use testcontainers_modules::kafka::apache::{Kafka, KAFKA_PORT};
 
 use common::{TestServer, PASSWORD, USERNAME};
 
@@ -55,10 +55,20 @@ async fn site_send_publishes_the_uploaded_file_to_kafka() {
     let send_reply = client.command("SITE SEND hello.txt");
     assert!(send_reply.starts_with('2'), "SITE SEND failed: {send_reply}");
 
-    let message = tokio::time::timeout(Duration::from_secs(30), consumer.recv())
-        .await
-        .expect("timed out waiting for the Kafka message")
-        .expect("error receiving from Kafka");
+    // `kafka.rs` relies on Kafka's auto-create-topics behaviour rather than
+    // pre-creating the topic, so the consumer may see `UnknownTopicOrPartition`
+    // for a brief moment while the topic is created and its metadata
+    // propagates. Retry until a message arrives or the overall timeout fires.
+    let message = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            match consumer.recv().await {
+                Ok(message) => return message,
+                Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for the Kafka message");
 
     assert_eq!(message.key(), Some("hello.txt".as_bytes()));
     assert_eq!(message.payload(), Some("hello kafka".as_bytes()));
