@@ -142,7 +142,6 @@ mod tests {
             username: user.as_ref().map(|_| "alice".to_string()),
             storage: Arc::new(storage),
             user: Arc::new(user),
-            storage_features: 0,
             logger: slog::Logger::root(slog::Discard, slog::o!()),
         }
     }
