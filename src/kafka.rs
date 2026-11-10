@@ -62,28 +62,10 @@ struct SendArgs {
     key: Option<String>,
 
     /// Kafka message header as NAME=VALUE; may be repeated
-    #[arg(long = "header", value_name = "NAME=VALUE", value_parser = parse_header)]
+    #[arg(long = "header", value_name = "NAME=VALUE", value_parser = SendArgs::parse_header)]
     headers: Vec<(String, String)>,
 
     file_names: Vec<String>,
-}
-
-/// Parses a `NAME=VALUE` header argument, splitting on the first `=` so the value may contain `=`.
-///
-/// # Errors
-/// Returns a message when there is no `=` or the name is empty.
-fn parse_header(raw: &str) -> Result<(String, String), String> {
-    match raw.split_once('=') {
-        Some((name, value)) if !name.is_empty() => Ok((name.to_string(), value.to_string())),
-        _ => Err(format!("expected NAME=VALUE, got \"{raw}\"")),
-    }
-}
-
-/// Builds a message's headers from the command line's `--header` pairs, in order.
-fn message_headers(pairs: &[(String, String)]) -> OwnedHeaders {
-    pairs.iter().fold(OwnedHeaders::new(), |headers, (name, value)| {
-        headers.insert(Header { key: name, value: Some(value.as_str()) })
-    })
 }
 
 impl SendArgs {
@@ -101,6 +83,24 @@ impl SendArgs {
         }
         Ok(args)
     }
+
+    /// Parses a `NAME=VALUE` header argument, splitting on the first `=` so the value may contain `=`.
+    ///
+    /// # Errors
+    /// Returns a message when there is no `=` or the name is empty.
+    fn parse_header(raw: &str) -> Result<(String, String), String> {
+        match raw.split_once('=') {
+            Some((name, value)) if !name.is_empty() => Ok((name.to_string(), value.to_string())),
+            _ => Err(format!("expected NAME=VALUE, got \"{raw}\"")),
+        }
+    }
+}
+
+/// Builds a message's headers from the command line's `--header` pairs, in order.
+fn make_headers(pairs: &[(String, String)]) -> OwnedHeaders {
+    pairs.iter().fold(OwnedHeaders::new(), |headers, (name, value)| {
+        headers.insert(Header { key: name, value: Some(value.as_str()) })
+    })
 }
 
 // MARK: Implementation
@@ -172,7 +172,7 @@ impl SiteCommandHandler<MemStorage, DefaultUser> for KafkaSendHandler {
             let message = FutureRecord::to(topic)
                 .key(key)
                 .payload(&payload)
-                .headers(message_headers(&args.headers));
+                .headers(make_headers(&args.headers));
             match producer.send(message, Duration::from_secs(0)).await {
                 Ok(delivery) => results.push(format!(
                     "Sent file \"{}\" as message to {}. {:?}",
@@ -331,12 +331,12 @@ mod tests {
 
     #[test]
     fn header_value_may_contain_equals() {
-        assert_eq!(parse_header("a=b=c"), Ok(("a".to_string(), "b=c".to_string())));
+        assert_eq!(SendArgs::parse_header("a=b=c"), Ok(("a".to_string(), "b=c".to_string())));
     }
 
     #[test]
     fn header_value_may_be_empty() {
-        assert_eq!(parse_header("a="), Ok(("a".to_string(), String::new())));
+        assert_eq!(SendArgs::parse_header("a="), Ok(("a".to_string(), String::new())));
     }
 
     #[test]
@@ -353,12 +353,12 @@ mod tests {
 
     #[test]
     fn rejects_header_with_empty_name() {
-        assert!(parse_header("=value").is_err());
+        assert!(SendArgs::parse_header("=value").is_err());
     }
 
     #[test]
     fn message_headers_follow_argument_order() {
-        let headers = message_headers(&[
+        let headers = make_headers(&[
             ("b".to_string(), "2".to_string()),
             ("a".to_string(), "1".to_string()),
             ("b".to_string(), "3".to_string()),
