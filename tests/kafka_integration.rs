@@ -6,12 +6,8 @@
 //! cargo test --test kafka_integration -- --ignored
 //! ```
 //!
-//! `kafka.rs` currently hardcodes the broker address as `localhost:9092`
-//! (see issue: "Kafka broker address is hardcoded"), so this test pins the
-//! container's Kafka listener to that exact host port rather than letting
-//! Docker assign a random one. Once the broker address is made
-//! configurable, this can be relaxed and the test made safe to run
-//! concurrently with others.
+//! Docker maps the container's Kafka listener to a random host port, which
+//! the test passes to the server through `config.toml`.
 
 mod common;
 
@@ -21,7 +17,6 @@ use rdkafka::consumer::{Consumer, StreamConsumer};
 use rdkafka::message::Message;
 use rdkafka::ClientConfig;
 use testcontainers::runners::AsyncRunner;
-use testcontainers::ImageExt;
 use testcontainers_modules::kafka::apache::{Kafka, KAFKA_PORT};
 
 use common::{TestServer, PASSWORD, USERNAME};
@@ -31,21 +26,35 @@ const TOPIC: &str = "rust-topic";
 #[tokio::test]
 #[ignore = "requires a running Docker daemon"]
 async fn site_send_publishes_the_uploaded_file_to_kafka() {
-    let _kafka_container = Kafka::default()
-        .with_mapped_port(9092, KAFKA_PORT)
+    let kafka_container = Kafka::default()
         .start()
         .await
         .expect("failed to start the Kafka test container");
+    let kafka_port = kafka_container
+        .get_host_port_ipv4(KAFKA_PORT)
+        .await
+        .expect("failed to read the Kafka container's host port");
+    let brokers = format!("127.0.0.1:{kafka_port}");
 
     let consumer: StreamConsumer = ClientConfig::new()
-        .set("bootstrap.servers", "localhost:9092")
+        .set("bootstrap.servers", &brokers)
         .set("group.id", "ftp-kafka-integration-test")
         .set("auto.offset.reset", "earliest")
         .create()
         .expect("failed to create Kafka consumer");
     consumer.subscribe(&[TOPIC]).expect("failed to subscribe to topic");
 
-    let server = TestServer::start();
+    let server = TestServer::start_with_config(&format!(
+        r#"
+            [kafka]
+            brokers = "{brokers}"
+            default_topic = "{TOPIC}"
+
+            [[users]]
+            username = "{USERNAME}"
+            password = "{PASSWORD}"
+        "#
+    ));
     let mut client = server.connect();
     client.login(USERNAME, PASSWORD);
 
