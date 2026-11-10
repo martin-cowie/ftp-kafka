@@ -2,7 +2,9 @@ use async_trait::async_trait;
 use clap::Parser;
 use libunftp::options::{Reply, ReplyCode, SiteCommandContext, SiteCommandHandler};
 use rdkafka::config::ClientConfig;
+use rdkafka::message::{Header, OwnedHeaders};
 use rdkafka::producer::{FutureProducer, FutureRecord};
+use serde::Deserialize;
 use std::time::Duration;
 use tokio::io::AsyncReadExt;
 use unftp_core::auth::DefaultUser;
@@ -10,22 +12,53 @@ use unftp_core::storage::StorageBackend;
 
 use crate::storage::MemStorage;
 
-//FIXME: push to server/principal configuration
-const BROKERS: &str = "localhost:9092";
-const DEFAULT_TOPIC: &str = "rust-topic"; 
+// MARK: Config
+
+/// Kafka settings, loaded from the required `[kafka]` table in `config.toml`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct KafkaConfig {
+    /// Comma-separated `host:port` list, passed to librdkafka as `bootstrap.servers`.
+    pub brokers: String,
+    /// Topic used when `SITE SEND` has no `--topic`.
+    pub default_topic: String,
+    /// How long to wait for a message's delivery; 5000 when left out.
+    #[serde(default = "KafkaConfig::default_message_timeout_ms")]
+    pub message_timeout_ms: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct ConfigFile {
+    kafka: KafkaConfig,
+}
+
+impl KafkaConfig {
+    pub fn from_file(path: &str) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let content = std::fs::read_to_string(path)?;
+        let config: ConfigFile = toml::from_str(&content)?;
+        Ok(config.kafka)
+    }
+
+    fn default_message_timeout_ms() -> u64 {
+        5000
+    }
+}
 
 // MARK: Options
 
 #[derive(Parser, Debug)]
 #[command(no_binary_name = true)]
 struct SendArgs {
-    /// Kafka topic to publish to
-    #[arg(long, default_value = DEFAULT_TOPIC)]
-    topic: String,
+    /// Kafka topic to publish to (defaults to the configured default_topic)
+    #[arg(long)]
+    topic: Option<String>,
 
     /// Kafka message key (defaults to each file's name)
     #[arg(long)]
     key: Option<String>,
+
+    /// Kafka message header as NAME=VALUE; may be repeated
+    #[arg(long = "header", value_name = "NAME=VALUE", value_parser = SendArgs::parse_header)]
+    headers: Vec<(String, String)>,
 
     file_names: Vec<String>,
 }
@@ -45,12 +78,38 @@ impl SendArgs {
         }
         Ok(args)
     }
+
+    /// Parses a `NAME=VALUE` header argument, splitting on the first `=` so the value may contain `=`.
+    ///
+    /// # Errors
+    /// Returns a message when there is no `=` or the name is empty.
+    fn parse_header(raw: &str) -> Result<(String, String), String> {
+        match raw.split_once('=') {
+            Some((name, value)) if !name.is_empty() => Ok((name.to_string(), value.to_string())),
+            _ => Err(format!("expected NAME=VALUE, got \"{raw}\"")),
+        }
+    }
+}
+
+/// Builds a message's headers from the command line's `--header` pairs, in order.
+fn make_headers(pairs: &[(String, String)]) -> OwnedHeaders {
+    pairs.iter().fold(OwnedHeaders::new(), |headers, (name, value)| {
+        headers.insert(Header { key: name, value: Some(value.as_str()) })
+    })
 }
 
 // MARK: Implementation
 
 #[derive(Debug)]
-pub struct KafkaSendHandler;
+pub struct KafkaSendHandler {
+    config: KafkaConfig,
+}
+
+impl KafkaSendHandler {
+    pub fn new(config: KafkaConfig) -> Self {
+        KafkaSendHandler { config }
+    }
+}
 
 #[async_trait]
 impl SiteCommandHandler<MemStorage, DefaultUser> for KafkaSendHandler {
@@ -60,6 +119,7 @@ impl SiteCommandHandler<MemStorage, DefaultUser> for KafkaSendHandler {
             Ok(args) => args,
             Err(reply) => return reply,
         };
+        let topic = args.topic.as_deref().unwrap_or(&self.config.default_topic);
 
         // Prepare args to get file content
         let Some(user) = context.user.as_ref() else {
@@ -68,19 +128,19 @@ impl SiteCommandHandler<MemStorage, DefaultUser> for KafkaSendHandler {
 
         // Connect to Kafka
         let producer: FutureProducer = match ClientConfig::new()
-            .set("bootstrap.servers", BROKERS)
-            .set("message.timeout.ms", "5000")
+            .set("bootstrap.servers", &self.config.brokers)
+            .set("message.timeout.ms", self.config.message_timeout_ms.to_string())
             .create()
         {
             Ok(producer) => producer,
             Err(e) => {
                 return Reply::new(
                     ReplyCode::LocalError,
-                    &format!("Cannot connect to Kafka broker {}: {}", BROKERS, e),
+                    &format!("Cannot connect to Kafka brokers {}: {}", self.config.brokers, e),
                 );
             }
         };
-        slog::info!(context.logger, "Connected to {}", BROKERS);
+        slog::info!(context.logger, "Connected to {}", self.config.brokers);
 
         // Send each file as a discrete message
         let mut results = Vec::new();
@@ -104,11 +164,14 @@ impl SiteCommandHandler<MemStorage, DefaultUser> for KafkaSendHandler {
             };
 
             let key = args.key.as_deref().unwrap_or(file_name);
-            let message = FutureRecord::to(&args.topic).key(key).payload(&payload);
+            let message = FutureRecord::to(topic)
+                .key(key)
+                .payload(&payload)
+                .headers(make_headers(&args.headers));
             match producer.send(message, Duration::from_secs(0)).await {
                 Ok(delivery) => results.push(format!(
                     "Sent file \"{}\" as message to {}. {:?}",
-                    file_name, args.topic, delivery
+                    file_name, topic, delivery
                 )),
                 Err((kerr, _)) => {
                     results.push(format!("\"{}\": {:?}", file_name, kerr));
@@ -131,6 +194,7 @@ impl SiteCommandHandler<MemStorage, DefaultUser> for KafkaSendHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rdkafka::message::Headers;
     use std::sync::Arc;
 
     use crate::storage::MemStorage;
@@ -146,6 +210,14 @@ mod tests {
         }
     }
 
+    fn config() -> KafkaConfig {
+        KafkaConfig {
+            brokers: "localhost:9092".to_string(),
+            default_topic: "test-topic".to_string(),
+            message_timeout_ms: 5000,
+        }
+    }
+
     fn is_code(reply: &Reply, expected: ReplyCode) -> bool {
         matches!(reply, Reply::CodeAndMsg { code, .. } if *code == expected)
             || matches!(reply, Reply::MultiLine { code, .. } if *code == expected)
@@ -154,31 +226,180 @@ mod tests {
     #[tokio::test]
     async fn handle_rejects_missing_file_names_without_touching_storage_or_kafka() {
         let ctx = context("", None, MemStorage::new());
-        let reply = KafkaSendHandler.handle(&ctx).await;
+        let reply = KafkaSendHandler::new(config()).handle(&ctx).await;
         assert!(is_code(&reply, ReplyCode::ParameterSyntaxError));
     }
 
     #[tokio::test]
     async fn handle_rejects_when_not_logged_in() {
         let ctx = context("hello.txt", None, MemStorage::new());
-        let reply = KafkaSendHandler.handle(&ctx).await;
+        let reply = KafkaSendHandler::new(config()).handle(&ctx).await;
         assert!(is_code(&reply, ReplyCode::NotLoggedIn));
     }
 
     #[tokio::test]
     async fn handle_reports_missing_files_per_name_without_a_reachable_broker() {
         let ctx = context("missing.txt", Some(DefaultUser), MemStorage::new());
-        let reply = KafkaSendHandler.handle(&ctx).await;
+        let reply = KafkaSendHandler::new(config()).handle(&ctx).await;
         assert!(is_code(&reply, ReplyCode::LocalError));
     }
 
 
     #[test]
+    fn kafka_config_requires_the_kafka_table() {
+        let err = toml::from_str::<ConfigFile>("").unwrap_err();
+        assert!(err.to_string().contains("kafka"), "{err}");
+    }
+
+    #[test]
+    fn kafka_config_requires_brokers() {
+        let err = toml::from_str::<ConfigFile>(
+            r#"
+                [kafka]
+                default_topic = "custom-topic"
+            "#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("brokers"), "{err}");
+    }
+
+    #[test]
+    fn kafka_config_requires_default_topic() {
+        let err = toml::from_str::<ConfigFile>(
+            r#"
+                [kafka]
+                brokers = "my-broker:9092"
+            "#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("default_topic"), "{err}");
+    }
+
+    #[test]
+    fn kafka_config_reads_every_field() {
+        let config: ConfigFile = toml::from_str(
+            r#"
+                [kafka]
+                brokers = "kafka1:9092,kafka2:9092"
+                default_topic = "custom-topic"
+                message_timeout_ms = 10000
+            "#,
+        )
+        .unwrap();
+        assert_eq!(config.kafka.brokers, "kafka1:9092,kafka2:9092");
+        assert_eq!(config.kafka.default_topic, "custom-topic");
+        assert_eq!(config.kafka.message_timeout_ms, 10000);
+    }
+
+    #[test]
+    fn kafka_config_message_timeout_defaults_to_5000() {
+        let config: ConfigFile = toml::from_str(
+            r#"
+                [kafka]
+                brokers = "my-broker:9092"
+                default_topic = "custom-topic"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(config.kafka.message_timeout_ms, 5000);
+    }
+
+    #[test]
+    fn kafka_config_from_file_reads_the_kafka_table() {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        std::io::Write::write_all(
+            &mut file,
+            br#"
+                [kafka]
+                brokers = "my-broker:9092"
+                default_topic = "custom-topic"
+
+                [[users]]
+                username = "alice"
+                password = "password123"
+            "#,
+        )
+        .unwrap();
+
+        let config = KafkaConfig::from_file(file.path().to_str().unwrap()).unwrap();
+        assert_eq!(config.brokers, "my-broker:9092");
+        assert_eq!(config.default_topic, "custom-topic");
+    }
+
+    #[test]
+    fn kafka_config_from_file_fails_when_file_missing() {
+        let result = KafkaConfig::from_file("/nonexistent/path/config.toml");
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn parses_plain_file_names() {
         let args = SendArgs::parse("file1.txt file2.txt").unwrap();
         assert_eq!(args.file_names, vec!["file1.txt", "file2.txt"]);
-        assert_eq!(args.topic, DEFAULT_TOPIC);
+        assert_eq!(args.topic, None);
         assert_eq!(args.key, None);
+        assert!(args.headers.is_empty());
+    }
+
+    #[test]
+    fn parses_repeated_headers_in_order() {
+        let args = SendArgs::parse("--header a=1 --header \"b=two words\" f.txt").unwrap();
+        assert_eq!(
+            args.headers,
+            vec![
+                ("a".to_string(), "1".to_string()),
+                ("b".to_string(), "two words".to_string()),
+            ]
+        );
+        assert_eq!(args.file_names, vec!["f.txt"]);
+    }
+
+    #[test]
+    fn header_value_may_contain_equals() {
+        assert_eq!(SendArgs::parse_header("a=b=c"), Ok(("a".to_string(), "b=c".to_string())));
+    }
+
+    #[test]
+    fn header_value_may_be_empty() {
+        assert_eq!(SendArgs::parse_header("a="), Ok(("a".to_string(), String::new())));
+    }
+
+    #[test]
+    fn rejects_header_without_equals() {
+        let err = SendArgs::parse("--header noequals f.txt").unwrap_err();
+        assert!(matches!(
+            err,
+            Reply::CodeAndMsg {
+                code: ReplyCode::ParameterSyntaxError,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn rejects_header_with_empty_name() {
+        assert!(SendArgs::parse_header("=value").is_err());
+    }
+
+    #[test]
+    fn message_headers_follow_argument_order() {
+        let headers = make_headers(&[
+            ("b".to_string(), "2".to_string()),
+            ("a".to_string(), "1".to_string()),
+            ("b".to_string(), "3".to_string()),
+        ]);
+        let pairs: Vec<(&str, &[u8])> = headers
+            .iter()
+            .map(|h| (h.key, h.value.unwrap()))
+            .collect();
+        assert_eq!(
+            pairs,
+            vec![
+                ("b", b"2".as_slice()),
+                ("a", b"1".as_slice()),
+                ("b", b"3".as_slice()),
+            ]
+        );
     }
 
     #[test]
@@ -191,7 +412,7 @@ mod tests {
     fn parses_topic_and_key_alongside_quoted_file_names() {
         let args =
             SendArgs::parse("--topic my-topic --key my-key \"my file.txt\" other.txt").unwrap();
-        assert_eq!(args.topic, "my-topic");
+        assert_eq!(args.topic, Some("my-topic".to_string()));
         assert_eq!(args.key, Some("my-key".to_string()));
         assert_eq!(args.file_names, vec!["my file.txt", "other.txt"]);
     }
