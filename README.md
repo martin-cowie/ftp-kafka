@@ -23,7 +23,7 @@ cp config.toml.example config.toml
 
 ```toml
 [kafka]
-brokers = "localhost:9092"
+brokers = "localhost:9092,otherhost:9092"
 default_topic = "rust-topic"
 message_timeout_ms = 5000
 
