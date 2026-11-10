@@ -63,10 +63,18 @@ lftp -u alice,password123 ftp://127.0.0.1:2121
 | `RETR <file>` | Download a file |
 | `DELE <file>` | Delete a file |
 | `RNFR`/`RNTO` | Rename a file |
-| `SITE SEND [--topic <topic>] [--key <key>] <file>...` | Publish one or more uploaded files to Kafka |
+| `SITE SEND [--topic <topic>] [--key <key>] [--header <name>=<value>]... <file>...` | Publish one or more uploaded files to Kafka |
 
 `SITE SEND` publishes each named file as a separate Kafka message. `--topic` defaults to
 `config.toml`'s `[kafka] default_topic`; `--key` defaults to each file's name.
+
+`--header` adds a Kafka message header and may be repeated; every message in the command gets the
+same headers, in the order given. The value is everything after the first `=`, so it may itself
+contain `=`. Quote an argument that contains spaces:
+
+```
+SITE SEND --header content-type=application/json --header "source=ftp gateway" a.json b.json
+```
 
 ### Example session
 
@@ -99,8 +107,9 @@ cargo test
 ```
 
 Runs the unit tests (in `src/`) and a black-box integration suite (`tests/ftp_integration.rs`) that
-spawns the real `ftp-server` binary and drives it as an FTP client would, over TCP. Neither needs any
-external services.
+spawns the real `ftp-server` binary and drives it as an FTP client would, over TCP. It also runs
+`tests/kafka_mock_integration.rs`, which checks that `SITE SEND` delivers payload, key and headers to
+librdkafka's in-process mock Kafka cluster. None of these needs any external services.
 
 A further end-to-end test, `tests/kafka_integration.rs`, exercises `SITE SEND` against a real Kafka
 broker started via [testcontainers](https://testcontainers.com/). It requires a working Docker daemon,

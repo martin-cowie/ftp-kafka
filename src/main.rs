@@ -33,7 +33,7 @@ async fn main() -> std::process::ExitCode {
         KafkaConfig::from_file("config.toml").expect("Failed to load config.toml");
 
     let server = match ServerBuilder::with_authenticator(
-        Box::new(|| MemStorage::new()),
+        Box::new(MemStorage::new),
         Arc::new(authenticator),
     )
     .greeting("This is a test FTP server")

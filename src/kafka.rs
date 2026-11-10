@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use clap::Parser;
 use libunftp::options::{Reply, ReplyCode, SiteCommandContext, SiteCommandHandler};
 use rdkafka::config::ClientConfig;
+use rdkafka::message::{Header, OwnedHeaders};
 use rdkafka::producer::{FutureProducer, FutureRecord};
 use serde::Deserialize;
 use std::time::Duration;
@@ -60,7 +61,29 @@ struct SendArgs {
     #[arg(long)]
     key: Option<String>,
 
+    /// Kafka message header as NAME=VALUE; may be repeated
+    #[arg(long = "header", value_name = "NAME=VALUE", value_parser = parse_header)]
+    headers: Vec<(String, String)>,
+
     file_names: Vec<String>,
+}
+
+/// Parses a `NAME=VALUE` header argument, splitting on the first `=` so the value may contain `=`.
+///
+/// # Errors
+/// Returns a message when there is no `=` or the name is empty.
+fn parse_header(raw: &str) -> Result<(String, String), String> {
+    match raw.split_once('=') {
+        Some((name, value)) if !name.is_empty() => Ok((name.to_string(), value.to_string())),
+        _ => Err(format!("expected NAME=VALUE, got \"{raw}\"")),
+    }
+}
+
+/// Builds a message's headers from the command line's `--header` pairs, in order.
+fn message_headers(pairs: &[(String, String)]) -> OwnedHeaders {
+    pairs.iter().fold(OwnedHeaders::new(), |headers, (name, value)| {
+        headers.insert(Header { key: name, value: Some(value.as_str()) })
+    })
 }
 
 impl SendArgs {
@@ -146,7 +169,10 @@ impl SiteCommandHandler<MemStorage, DefaultUser> for KafkaSendHandler {
             };
 
             let key = args.key.as_deref().unwrap_or(file_name);
-            let message = FutureRecord::to(topic).key(key).payload(&payload);
+            let message = FutureRecord::to(topic)
+                .key(key)
+                .payload(&payload)
+                .headers(message_headers(&args.headers));
             match producer.send(message, Duration::from_secs(0)).await {
                 Ok(delivery) => results.push(format!(
                     "Sent file \"{}\" as message to {}. {:?}",
@@ -173,6 +199,7 @@ impl SiteCommandHandler<MemStorage, DefaultUser> for KafkaSendHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rdkafka::message::Headers;
     use std::sync::Arc;
 
     use crate::storage::MemStorage;
@@ -286,6 +313,68 @@ mod tests {
         assert_eq!(args.file_names, vec!["file1.txt", "file2.txt"]);
         assert_eq!(args.topic, None);
         assert_eq!(args.key, None);
+        assert!(args.headers.is_empty());
+    }
+
+    #[test]
+    fn parses_repeated_headers_in_order() {
+        let args = SendArgs::parse("--header a=1 --header \"b=two words\" f.txt").unwrap();
+        assert_eq!(
+            args.headers,
+            vec![
+                ("a".to_string(), "1".to_string()),
+                ("b".to_string(), "two words".to_string()),
+            ]
+        );
+        assert_eq!(args.file_names, vec!["f.txt"]);
+    }
+
+    #[test]
+    fn header_value_may_contain_equals() {
+        assert_eq!(parse_header("a=b=c"), Ok(("a".to_string(), "b=c".to_string())));
+    }
+
+    #[test]
+    fn header_value_may_be_empty() {
+        assert_eq!(parse_header("a="), Ok(("a".to_string(), String::new())));
+    }
+
+    #[test]
+    fn rejects_header_without_equals() {
+        let err = SendArgs::parse("--header noequals f.txt").unwrap_err();
+        assert!(matches!(
+            err,
+            Reply::CodeAndMsg {
+                code: ReplyCode::ParameterSyntaxError,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn rejects_header_with_empty_name() {
+        assert!(parse_header("=value").is_err());
+    }
+
+    #[test]
+    fn message_headers_follow_argument_order() {
+        let headers = message_headers(&[
+            ("b".to_string(), "2".to_string()),
+            ("a".to_string(), "1".to_string()),
+            ("b".to_string(), "3".to_string()),
+        ]);
+        let pairs: Vec<(&str, &[u8])> = headers
+            .iter()
+            .map(|h| (h.key, h.value.unwrap()))
+            .collect();
+        assert_eq!(
+            pairs,
+            vec![
+                ("b", b"2".as_slice()),
+                ("a", b"1".as_slice()),
+                ("b", b"3".as_slice()),
+            ]
+        );
     }
 
     #[test]

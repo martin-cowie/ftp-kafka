@@ -9,15 +9,25 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::process::{Child, Command, Stdio};
+use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 pub const USERNAME: &str = "alice";
 pub const PASSWORD: &str = "password123";
 
+/// Lets only one test run a server at a time.
+///
+/// On macOS, a socket the test process opens while another test spawns a
+/// server can leak into that server before it is marked close-on-exec. A
+/// leaked listener from `free_port` then accepts this test's connections and
+/// resets them when the other server exits.
+static ONE_SERVER_AT_A_TIME: Mutex<()> = Mutex::new(());
+
 pub struct TestServer {
     child: Child,
     port: u16,
     _dir: tempfile::TempDir,
+    _turn: MutexGuard<'static, ()>,
 }
 
 impl TestServer {
@@ -33,6 +43,9 @@ impl TestServer {
     }
 
     pub fn start_with_config(config_toml: &str) -> Self {
+        let turn = ONE_SERVER_AT_A_TIME
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("config.toml"), config_toml).unwrap();
 
@@ -46,7 +59,7 @@ impl TestServer {
             .spawn()
             .expect("failed to spawn ftp-server binary");
 
-        let server = TestServer { child, port, _dir: dir };
+        let server = TestServer { child, port, _dir: dir, _turn: turn };
         server.wait_until_accepting_connections();
         server
     }
