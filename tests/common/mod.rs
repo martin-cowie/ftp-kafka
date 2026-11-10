@@ -31,10 +31,15 @@ pub struct TestServer {
 }
 
 impl TestServer {
-    /// Spawns the server with the default `config.toml` (alice/bob), on a free port.
+    /// Spawns the server with a `config.toml` for one user, alice, on a free port.
+    /// Kafka points at `localhost:9092` and topic `rust-topic`.
     pub fn start() -> Self {
         Self::start_with_config(&format!(
             r#"
+                [kafka]
+                brokers = "localhost:9092"
+                default_topic = "rust-topic"
+
                 [[users]]
                 username = "{USERNAME}"
                 password = "{PASSWORD}"
@@ -100,6 +105,37 @@ impl Drop for TestServer {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+/// Runs the server with `config_toml` and returns its output once it exits.
+///
+/// For testing startup failures: fails the test if the server is still
+/// running after five seconds.
+pub fn run_until_exit(config_toml: &str) -> std::process::Output {
+    let _turn = ONE_SERVER_AT_A_TIME
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("config.toml"), config_toml).unwrap();
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_ftp-server"))
+        .current_dir(dir.path())
+        .arg("--port")
+        .arg(free_port().to_string())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn ftp-server binary");
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while child.try_wait().unwrap().is_none() {
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            panic!("ftp-server was expected to exit, but is still running");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    child.wait_with_output().unwrap()
 }
 
 fn free_port() -> u16 {

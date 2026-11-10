@@ -5,7 +5,7 @@
 
 mod common;
 
-use common::{TestServer, PASSWORD, USERNAME};
+use common::{run_until_exit, TestServer, PASSWORD, USERNAME};
 
 #[test]
 fn logs_in_with_correct_credentials() {
@@ -121,4 +121,39 @@ fn second_instance_on_the_same_port_fails_to_start_and_says_why() {
         stderr.contains("already in use") || stderr.contains("FTP server failed to listen"),
         "expected a clear reason in stderr, got: {stderr}"
     );
+}
+
+#[test]
+fn refuses_to_start_without_the_kafka_table() {
+    let output = run_until_exit(&format!(
+        r#"
+            [[users]]
+            username = "{USERNAME}"
+            password = "{PASSWORD}"
+        "#
+    ));
+
+    assert!(!output.status.success(), "the server should not start without [kafka]");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("missing field `kafka`"), "expected a clear reason, got: {stderr}");
+    assert!(!stderr.contains(PASSWORD), "stderr should not reveal passwords: {stderr}");
+}
+
+#[test]
+fn refuses_to_start_without_brokers() {
+    let output = run_until_exit(&format!(
+        r#"
+            [kafka]
+            default_topic = "rust-topic"
+
+            [[users]]
+            username = "{USERNAME}"
+            password = "{PASSWORD}"
+        "#
+    ));
+
+    assert!(!output.status.success(), "the server should not start without brokers");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("missing field `brokers`"), "expected a clear reason, got: {stderr}");
+    assert!(!stderr.contains(PASSWORD), "stderr should not reveal passwords: {stderr}");
 }

@@ -14,29 +14,20 @@ use crate::storage::MemStorage;
 
 // MARK: Config
 
-/// Kafka settings, loaded from the `[kafka]` table in `config.toml`. Any
-/// field left out of the file falls back to its default here.
+/// Kafka settings, loaded from the required `[kafka]` table in `config.toml`.
 #[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
 pub struct KafkaConfig {
+    /// Comma-separated `host:port` list, passed to librdkafka as `bootstrap.servers`.
     pub brokers: String,
+    /// Topic used when `SITE SEND` has no `--topic`.
     pub default_topic: String,
+    /// How long to wait for a message's delivery; 5000 when left out.
+    #[serde(default = "KafkaConfig::default_message_timeout_ms")]
     pub message_timeout_ms: u64,
-}
-
-impl Default for KafkaConfig {
-    fn default() -> Self {
-        KafkaConfig {
-            brokers: "localhost:9092".to_string(),
-            default_topic: "rust-topic".to_string(),
-            message_timeout_ms: 5000,
-        }
-    }
 }
 
 #[derive(Debug, Deserialize)]
 struct ConfigFile {
-    #[serde(default)]
     kafka: KafkaConfig,
 }
 
@@ -45,6 +36,10 @@ impl KafkaConfig {
         let content = std::fs::read_to_string(path)?;
         let config: ConfigFile = toml::from_str(&content)?;
         Ok(config.kafka)
+    }
+
+    fn default_message_timeout_ms() -> u64 {
+        5000
     }
 }
 
@@ -215,6 +210,14 @@ mod tests {
         }
     }
 
+    fn config() -> KafkaConfig {
+        KafkaConfig {
+            brokers: "localhost:9092".to_string(),
+            default_topic: "test-topic".to_string(),
+            message_timeout_ms: 5000,
+        }
+    }
+
     fn is_code(reply: &Reply, expected: ReplyCode) -> bool {
         matches!(reply, Reply::CodeAndMsg { code, .. } if *code == expected)
             || matches!(reply, Reply::MultiLine { code, .. } if *code == expected)
@@ -223,31 +226,53 @@ mod tests {
     #[tokio::test]
     async fn handle_rejects_missing_file_names_without_touching_storage_or_kafka() {
         let ctx = context("", None, MemStorage::new());
-        let reply = KafkaSendHandler::new(KafkaConfig::default()).handle(&ctx).await;
+        let reply = KafkaSendHandler::new(config()).handle(&ctx).await;
         assert!(is_code(&reply, ReplyCode::ParameterSyntaxError));
     }
 
     #[tokio::test]
     async fn handle_rejects_when_not_logged_in() {
         let ctx = context("hello.txt", None, MemStorage::new());
-        let reply = KafkaSendHandler::new(KafkaConfig::default()).handle(&ctx).await;
+        let reply = KafkaSendHandler::new(config()).handle(&ctx).await;
         assert!(is_code(&reply, ReplyCode::NotLoggedIn));
     }
 
     #[tokio::test]
     async fn handle_reports_missing_files_per_name_without_a_reachable_broker() {
         let ctx = context("missing.txt", Some(DefaultUser), MemStorage::new());
-        let reply = KafkaSendHandler::new(KafkaConfig::default()).handle(&ctx).await;
+        let reply = KafkaSendHandler::new(config()).handle(&ctx).await;
         assert!(is_code(&reply, ReplyCode::LocalError));
     }
 
 
     #[test]
-    fn kafka_config_defaults_when_section_is_absent() {
-        let config: ConfigFile = toml::from_str("").unwrap();
-        assert_eq!(config.kafka.brokers, "localhost:9092");
-        assert_eq!(config.kafka.default_topic, "rust-topic");
-        assert_eq!(config.kafka.message_timeout_ms, 5000);
+    fn kafka_config_requires_the_kafka_table() {
+        let err = toml::from_str::<ConfigFile>("").unwrap_err();
+        assert!(err.to_string().contains("kafka"), "{err}");
+    }
+
+    #[test]
+    fn kafka_config_requires_brokers() {
+        let err = toml::from_str::<ConfigFile>(
+            r#"
+                [kafka]
+                default_topic = "custom-topic"
+            "#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("brokers"), "{err}");
+    }
+
+    #[test]
+    fn kafka_config_requires_default_topic() {
+        let err = toml::from_str::<ConfigFile>(
+            r#"
+                [kafka]
+                brokers = "my-broker:9092"
+            "#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("default_topic"), "{err}");
     }
 
     #[test]
@@ -267,16 +292,15 @@ mod tests {
     }
 
     #[test]
-    fn kafka_config_falls_back_per_field() {
+    fn kafka_config_message_timeout_defaults_to_5000() {
         let config: ConfigFile = toml::from_str(
             r#"
                 [kafka]
                 brokers = "my-broker:9092"
+                default_topic = "custom-topic"
             "#,
         )
         .unwrap();
-        assert_eq!(config.kafka.brokers, "my-broker:9092");
-        assert_eq!(config.kafka.default_topic, "rust-topic");
         assert_eq!(config.kafka.message_timeout_ms, 5000);
     }
 
@@ -288,6 +312,7 @@ mod tests {
             br#"
                 [kafka]
                 brokers = "my-broker:9092"
+                default_topic = "custom-topic"
 
                 [[users]]
                 username = "alice"
@@ -298,7 +323,7 @@ mod tests {
 
         let config = KafkaConfig::from_file(file.path().to_str().unwrap()).unwrap();
         assert_eq!(config.brokers, "my-broker:9092");
-        assert_eq!(config.default_topic, "rust-topic");
+        assert_eq!(config.default_topic, "custom-topic");
     }
 
     #[test]

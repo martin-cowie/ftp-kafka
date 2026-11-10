@@ -36,8 +36,16 @@ username = "bob"
 password = "changeme"
 ```
 
-Edit `config.toml` to set your own usernames and passwords. The `[kafka]` table is optional — any
-field left out (or the whole table) falls back to the defaults shown above.
+Edit `config.toml` to set your own usernames, passwords and Kafka settings. The `[kafka]` table is
+required:
+
+| Field | Required | Meaning |
+|---|---|---|
+| `brokers` | Yes | Comma-separated `host:port` list; the server needs only one to be reachable |
+| `default_topic` | Yes | Topic used when `SITE SEND` has no `--topic` |
+| `message_timeout_ms` | No (default `5000`) | How long to wait for a message's delivery |
+
+The server won't start if `brokers` or `default_topic` is missing.
 
 ## Running
 
