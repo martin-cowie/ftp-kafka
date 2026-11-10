@@ -137,8 +137,6 @@ cargo llvm-cov --show-missing-lines
 
 `SITE SEND` is implemented with a `SiteCommandHandler` registered via
 `ServerBuilder::site_command("send", KafkaSendHandler)`, a generic `SITE` subcommand extension point
-that was contributed upstream to [libunftp](https://github.com/bolcom/libunftp). It hasn't shipped in
-a tagged `libunftp` release yet, so this project depends on `libunftp`'s `master` branch directly
-rather than a published crates.io version.
+that was contributed upstream to [libunftp](https://github.com/bolcom/libunftp). 
 
-Per-session storage isolation is achieved naturally: libunftp calls the storage factory (`|| MemStorage::new()`) once per incoming TCP connection, so each session gets a fresh, empty `HashMap`.
+Per-session storage isolation is achieved naturally: libunftp calls the storage factory (`MemStorage::new`) once per incoming TCP connection, so each session gets a fresh, empty `HashMap`.
