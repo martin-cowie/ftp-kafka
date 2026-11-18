@@ -34,7 +34,7 @@ required:
 | Field | Required | Meaning |
 |---|---|---|
 | `brokers` | Yes | Comma-separated `host:port` list; the server needs only one to be reachable |
-| `default_topic` | Yes | Topic used when `SITE SEND` has no `--topic` |
+| `default_topic` | Yes | Topic a Session starts with; `SITE SEND` uses it until `SITE TOPIC` changes it |
 | `message_timeout_ms` | No (default `5000`) | How long to wait for a message's delivery |
 | `auth_timeout_ms` | No (default `5000`) | How long a login waits for Kafka to accept or reject the credentials |
 | `security_protocol` | No (default `PLAINTEXT`) | `PLAINTEXT` or `SASL_PLAINTEXT` |
@@ -91,9 +91,17 @@ lftp -u alice,password123 ftp://127.0.0.1:2121
 | `DELE <file>` | Delete a file |
 | `RNFR`/`RNTO` | Rename a file |
 | `SITE SEND [--topic <topic>] [--key <key>] [--header <name>=<value>]... <file>...` | Publish one or more uploaded files to Kafka |
+| `SITE TOPICS` | List the topics on the Kafka cluster, one per line |
+| `SITE TOPIC [<topic>]` | Report the Session topic, or set it |
 
-`SITE SEND` publishes each named file as a separate Kafka message. `--topic` defaults to
-`config.toml`'s `[kafka] default_topic`; `--key` defaults to each file's name.
+`SITE SEND` publishes each named file as a separate Kafka message. `--key` defaults to each file's
+name. The topic is, in order of precedence: `--topic`, then the Session topic, then
+`config.toml`'s `[kafka] default_topic`.
+
+`SITE TOPICS` lists the cluster's topics, queried with the Session's Kafka credentials; internal
+topics (names starting `__`) are hidden. `SITE TOPIC` reports the Session topic, which starts as
+`default_topic`. `SITE TOPIC <topic>` sets it for the rest of the Session, and is refused with a
+`550` reply if the topic does not exist on the cluster.
 
 `--header` adds a Kafka message header and may be repeated; every message in the command gets the
 same headers, in the order given. The value is everything after the first `=`, so it may itself
@@ -154,8 +162,8 @@ cargo llvm-cov --show-missing-lines
 
 ## Implementation notes
 
-`SITE SEND` is implemented with a `SiteCommandHandler` registered via
-`ServerBuilder::site_command("send", KafkaSendHandler)`, a generic `SITE` subcommand extension point
+`SITE SEND`, `SITE TOPICS` and `SITE TOPIC` are implemented with `SiteCommandHandler`s registered via
+`ServerBuilder::site_command("send", KafkaSendHandler)` and its siblings, a generic `SITE` subcommand extension point
 that was contributed upstream to [libunftp](https://github.com/bolcom/libunftp). 
 
 Per-session storage isolation is achieved naturally: libunftp calls the storage factory (`MemStorage::new`) once per incoming TCP connection, so each session gets a fresh, empty `HashMap`.

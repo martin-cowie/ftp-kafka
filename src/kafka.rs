@@ -19,7 +19,7 @@ use crate::storage::MemStorage;
 pub struct KafkaConfig {
     /// Comma-separated `host:port` list, passed to librdkafka as `bootstrap.servers`.
     pub brokers: String,
-    /// Topic used when `SITE SEND` has no `--topic`.
+    /// Topic a Session starts with, used by `SITE SEND` until `SITE TOPIC` changes it.
     pub default_topic: String,
     /// How long to wait for a message's delivery.
     pub message_timeout_ms: u64,
@@ -185,16 +185,20 @@ fn make_headers(pairs: &[(String, String)]) -> OwnedHeaders {
 
 // MARK: Implementation
 
-#[derive(Debug)]
-pub struct KafkaSendHandler {
-    config: KafkaConfig,
+/// Returns the Session's user, or the reply refusing a command from a client that is not logged in.
+pub(crate) fn logged_in_user(
+    context: &SiteCommandContext<MemStorage, KafkaUser>,
+) -> Result<&KafkaUser, Reply> {
+    context
+        .user
+        .as_ref()
+        .as_ref()
+        .ok_or_else(|| Reply::new(ReplyCode::NotLoggedIn, "Not logged in"))
 }
 
-impl KafkaSendHandler {
-    pub fn new(config: KafkaConfig) -> Self {
-        KafkaSendHandler { config }
-    }
-}
+/// Publishes uploaded files to Kafka: `SITE SEND`.
+#[derive(Debug)]
+pub struct KafkaSendHandler;
 
 #[async_trait]
 impl SiteCommandHandler<MemStorage, KafkaUser> for KafkaSendHandler {
@@ -204,12 +208,11 @@ impl SiteCommandHandler<MemStorage, KafkaUser> for KafkaSendHandler {
             Ok(args) => args,
             Err(reply) => return reply,
         };
-        let topic = args.topic.as_deref().unwrap_or(&self.config.default_topic);
-
-        // Prepare args to get file content
-        let Some(user) = context.user.as_ref() else {
-            return Reply::new(ReplyCode::NotLoggedIn, "Not logged in");
+        let user = match logged_in_user(context) {
+            Ok(user) => user,
+            Err(reply) => return reply,
         };
+        let topic = args.topic.unwrap_or_else(|| user.session_topic());
 
         let producer = &user.producer;
 
@@ -235,7 +238,7 @@ impl SiteCommandHandler<MemStorage, KafkaUser> for KafkaSendHandler {
             };
 
             let key = args.key.as_deref().unwrap_or(file_name);
-            let message = FutureRecord::to(topic)
+            let message = FutureRecord::to(&topic)
                 .key(key)
                 .payload(&payload)
                 .headers(make_headers(&args.headers));
@@ -282,10 +285,7 @@ mod tests {
             .set("bootstrap.servers", "127.0.0.1:1")
             .create_with_context(crate::auth::AuthContext::default())
             .unwrap();
-        KafkaUser {
-            username: "alice".to_string(),
-            producer,
-        }
+        KafkaUser::new("alice".to_string(), producer, "test-topic".to_string())
     }
 
     fn context(
@@ -303,17 +303,6 @@ mod tests {
         }
     }
 
-    fn config() -> KafkaConfig {
-        KafkaConfig {
-            brokers: "localhost:9092".to_string(),
-            default_topic: "test-topic".to_string(),
-            message_timeout_ms: 5000,
-            auth_timeout_ms: 5000,
-            security_protocol: SecurityProtocol::Plaintext,
-            sasl_mechanism: None,
-        }
-    }
-
     fn is_code(reply: &Reply, expected: ReplyCode) -> bool {
         matches!(reply, Reply::CodeAndMsg { code, .. } if *code == expected)
             || matches!(reply, Reply::MultiLine { code, .. } if *code == expected)
@@ -322,21 +311,21 @@ mod tests {
     #[tokio::test]
     async fn handle_rejects_missing_file_names_without_touching_storage_or_kafka() {
         let ctx = context("", None, MemStorage::new());
-        let reply = KafkaSendHandler::new(config()).handle(&ctx).await;
+        let reply = KafkaSendHandler.handle(&ctx).await;
         assert!(is_code(&reply, ReplyCode::ParameterSyntaxError));
     }
 
     #[tokio::test]
     async fn handle_rejects_when_not_logged_in() {
         let ctx = context("hello.txt", None, MemStorage::new());
-        let reply = KafkaSendHandler::new(config()).handle(&ctx).await;
+        let reply = KafkaSendHandler.handle(&ctx).await;
         assert!(is_code(&reply, ReplyCode::NotLoggedIn));
     }
 
     #[tokio::test]
     async fn handle_reports_missing_files_per_name_without_a_reachable_broker() {
         let ctx = context("missing.txt", Some(session_user()), MemStorage::new());
-        let reply = KafkaSendHandler::new(config()).handle(&ctx).await;
+        let reply = KafkaSendHandler.handle(&ctx).await;
         assert!(is_code(&reply, ReplyCode::LocalError));
     }
 

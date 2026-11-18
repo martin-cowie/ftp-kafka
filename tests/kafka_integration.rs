@@ -1,4 +1,4 @@
-//! End-to-end test of `SITE SEND` against a real Kafka broker, provided by
+//! End-to-end tests of `SITE SEND` and `SITE TOPICS` against a real Kafka broker, provided by
 //! `testcontainers`. Requires a working Docker daemon, so it's excluded from
 //! the default `cargo test` run - opt in explicitly with:
 //!
@@ -13,6 +13,8 @@ mod common;
 
 use std::time::Duration;
 
+use rdkafka::admin::{AdminClient, AdminOptions, NewTopic, TopicReplication};
+use rdkafka::client::DefaultClientContext;
 use rdkafka::consumer::{Consumer, StreamConsumer};
 use rdkafka::message::Message;
 use rdkafka::ClientConfig;
@@ -82,4 +84,48 @@ async fn site_send_publishes_the_uploaded_file_to_kafka() {
 
     assert_eq!(message.key(), Some("hello.txt".as_bytes()));
     assert_eq!(message.payload(), Some("hello kafka".as_bytes()));
+}
+
+#[tokio::test]
+#[ignore = "requires a running Docker daemon"]
+async fn site_topics_lists_the_topics_on_a_real_broker() {
+    let kafka_container = Kafka::default()
+        .start()
+        .await
+        .expect("failed to start the Kafka test container");
+    let kafka_port = kafka_container
+        .get_host_port_ipv4(KAFKA_PORT)
+        .await
+        .expect("failed to read the Kafka container's host port");
+    let brokers = format!("127.0.0.1:{kafka_port}");
+
+    let admin: AdminClient<DefaultClientContext> = ClientConfig::new()
+        .set("bootstrap.servers", &brokers)
+        .create()
+        .expect("failed to create the Kafka admin client");
+    admin
+        .create_topics(
+            &[NewTopic::new(TOPIC, 1, TopicReplication::Fixed(1))],
+            &AdminOptions::new(),
+        )
+        .await
+        .expect("failed to create the topic");
+
+    let server = TestServer::start_with_config(&format!(
+        r#"
+            [kafka]
+            brokers = "{brokers}"
+            default_topic = "{TOPIC}"
+        "#
+    ));
+    let mut client = server.connect();
+    client.login(USERNAME, PASSWORD);
+
+    let reply = client.command("SITE TOPICS");
+    assert!(reply.starts_with("200"), "SITE TOPICS failed: {reply}");
+    assert!(reply.contains(TOPIC), "{reply}");
+    assert!(!reply.contains("__consumer_offsets"), "{reply}");
+
+    let selected = client.command(&format!("SITE TOPIC {TOPIC}"));
+    assert!(selected.starts_with("200"), "SITE TOPIC failed: {selected}");
 }
