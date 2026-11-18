@@ -11,6 +11,7 @@ uploaded files to [Kafka](https://kafka.apache.org/) on request.
 - Supports upload (`STOR`), download (`RETR`), delete (`DELE`), and rename (`RNFR`/`RNTO`)
 - Files live in a single flat namespace — subdirectories (`MKD`/`RMD`) aren't supported
 - Custom `SITE SEND` command publishes one or more uploaded files to a Kafka topic
+- `SITE TOPICS` lists the cluster's topics; `SITE TOPIC` reports or sets the Session's topic
 
 ## Configuration
 
@@ -34,7 +35,7 @@ required:
 | Field | Required | Meaning |
 |---|---|---|
 | `brokers` | Yes | Comma-separated `host:port` list; the server needs only one to be reachable |
-| `default_topic` | Yes | Topic used when `SITE SEND` has no `--topic` |
+| `default_topic` | Yes | Each Session's starting topic, used when `SITE SEND` has no `--topic` |
 | `message_timeout_ms` | No (default `5000`) | How long to wait for a message's delivery |
 | `auth_timeout_ms` | No (default `5000`) | How long a login waits for Kafka to accept or reject the credentials |
 | `security_protocol` | No (default `PLAINTEXT`) | `PLAINTEXT` or `SASL_PLAINTEXT` |
@@ -91,9 +92,17 @@ lftp -u alice,password123 ftp://127.0.0.1:2121
 | `DELE <file>` | Delete a file |
 | `RNFR`/`RNTO` | Rename a file |
 | `SITE SEND [--topic <topic>] [--key <key>] [--header <name>=<value>]... <file>...` | Publish one or more uploaded files to Kafka |
+| `SITE TOPICS` | List the topics on the Kafka cluster, one per line (internal `__` topics hidden) |
+| `SITE TOPIC [<topic>]` | Report the Session topic, or set it to an existing topic |
 
-`SITE SEND` publishes each named file as a separate Kafka message. `--topic` defaults to
-`config.toml`'s `[kafka] default_topic`; `--key` defaults to each file's name.
+`SITE SEND` publishes each named file as a separate Kafka message. `--topic` defaults to the
+Session topic; `--key` defaults to each file's name.
+
+The Session topic starts as `config.toml`'s `[kafka] default_topic` and lasts only for that
+Session. `SITE TOPIC <topic>` changes it, provided the topic exists on the cluster (otherwise the
+reply is `550`). So `SITE SEND` picks its topic from `--topic`, then the Session topic, which is
+`default_topic` until changed. `SITE TOPICS` and `SITE TOPIC <topic>` query the cluster with the
+Session's own Kafka credentials.
 
 `--header` adds a Kafka message header and may be repeated; every message in the command gets the
 same headers, in the order given. The value is everything after the first `=`, so it may itself
@@ -136,9 +145,9 @@ cargo test
 Runs the unit tests (in `src/`) and a black-box integration suite (`tests/ftp_integration.rs`) that
 spawns the real `ftp-server` binary and drives it as an FTP client would, over TCP. It also runs
 `tests/kafka_mock_integration.rs`, which checks that `SITE SEND` delivers payload, key and headers to
-librdkafka's in-process mock Kafka cluster. None of these needs any external services.
+librdkafka's in-process mock Kafka cluster, and covers `SITE TOPIC`/`SITE TOPICS` and topic precedence. None of these needs any external services.
 
-A further end-to-end test, `tests/kafka_integration.rs`, exercises `SITE SEND` against a real Kafka
+Further end-to-end tests, `tests/kafka_integration.rs`, exercise `SITE SEND` and `SITE TOPICS` against a real Kafka
 broker started via [testcontainers](https://testcontainers.com/). It requires a working Docker daemon,
 so it's excluded from the default run:
 
@@ -154,8 +163,12 @@ cargo llvm-cov --show-missing-lines
 
 ## Implementation notes
 
-`SITE SEND` is implemented with a `SiteCommandHandler` registered via
-`ServerBuilder::site_command("send", KafkaSendHandler)`, a generic `SITE` subcommand extension point
+`SITE SEND`, `SITE TOPICS` and `SITE TOPIC` are implemented as `SiteCommandHandler`s registered via
+`ServerBuilder::site_command` (e.g. `site_command("send", KafkaSendHandler)`), a generic `SITE` subcommand extension point
 that was contributed upstream to [libunftp](https://github.com/bolcom/libunftp). 
 
 Per-session storage isolation is achieved naturally: libunftp calls the storage factory (`MemStorage::new`) once per incoming TCP connection, so each session gets a fresh, empty `HashMap`.
+
+The handlers are shared by every session, so per-session state lives on the logged-in user instead:
+libunftp keeps one `KafkaUser` per session, which holds the session's producer and, behind a
+`Mutex`, its Session topic.

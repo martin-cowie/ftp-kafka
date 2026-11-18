@@ -1,4 +1,4 @@
-//! End-to-end test of `SITE SEND` against a real Kafka broker, provided by
+//! End-to-end tests of `SITE SEND` and `SITE TOPICS` against a real Kafka broker, provided by
 //! `testcontainers`. Requires a working Docker daemon, so it's excluded from
 //! the default `cargo test` run - opt in explicitly with:
 //!
@@ -13,6 +13,8 @@ mod common;
 
 use std::time::Duration;
 
+use rdkafka::admin::{AdminClient, AdminOptions, NewTopic, TopicReplication};
+use rdkafka::client::DefaultClientContext;
 use rdkafka::consumer::{Consumer, StreamConsumer};
 use rdkafka::message::Message;
 use rdkafka::ClientConfig;
@@ -82,4 +84,66 @@ async fn site_send_publishes_the_uploaded_file_to_kafka() {
 
     assert_eq!(message.key(), Some("hello.txt".as_bytes()));
     assert_eq!(message.payload(), Some("hello kafka".as_bytes()));
+}
+
+#[tokio::test]
+#[ignore = "requires a running Docker daemon"]
+async fn site_topics_lists_the_brokers_topics_without_internal_ones() {
+    let kafka_container = Kafka::default()
+        .start()
+        .await
+        .expect("failed to start the Kafka test container");
+    let kafka_port = kafka_container
+        .get_host_port_ipv4(KAFKA_PORT)
+        .await
+        .expect("failed to read the Kafka container's host port");
+    let brokers = format!("127.0.0.1:{kafka_port}");
+
+    let admin: AdminClient<DefaultClientContext> = ClientConfig::new()
+        .set("bootstrap.servers", &brokers)
+        .create()
+        .expect("failed to create Kafka admin client");
+    let results = admin
+        .create_topics(
+            &[
+                NewTopic::new("listed-a", 1, TopicReplication::Fixed(1)),
+                NewTopic::new("listed-b", 1, TopicReplication::Fixed(1)),
+            ],
+            &AdminOptions::new().operation_timeout(Some(Duration::from_secs(10))),
+        )
+        .await
+        .expect("failed to create topics");
+    for result in results {
+        result.expect("failed to create a topic");
+    }
+
+    let server = TestServer::start_with_config(&format!(
+        r#"
+            [kafka]
+            brokers = "{brokers}"
+            default_topic = "{TOPIC}"
+        "#
+    ));
+    let mut client = server.connect();
+    client.login(USERNAME, PASSWORD);
+
+    // Topic metadata may take a moment to propagate after creation.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let reply = client.command("SITE TOPICS");
+        assert!(reply.starts_with("200-"), "SITE TOPICS failed: {reply}");
+        let lines: Vec<&str> = reply.lines().map(str::trim).collect();
+        assert!(
+            !lines.iter().any(|line| line.starts_with("__")),
+            "internal topics should be hidden: {reply}"
+        );
+        if lines.contains(&"listed-a") && lines.contains(&"listed-b") {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "topics never appeared: {reply}"
+        );
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
 }

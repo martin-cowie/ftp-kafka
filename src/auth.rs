@@ -69,9 +69,34 @@ pub struct KafkaAuthenticator {
 type Handoff = Arc<Mutex<HashMap<String, Vec<SessionProducer>>>>;
 
 /// A logged-in FTP user together with the Kafka producer their login established.
+///
+/// libunftp keeps one `KafkaUser` for the life of a Session, so it is also where
+/// per-Session state, such as the Session topic, lives.
 pub struct KafkaUser {
     pub username: String,
     pub producer: SessionProducer,
+    topic: Mutex<String>,
+}
+
+impl KafkaUser {
+    /// Creates a Session's user whose Session topic starts as `topic`.
+    pub fn new(username: String, producer: SessionProducer, topic: String) -> Self {
+        KafkaUser {
+            username,
+            producer,
+            topic: Mutex::new(topic),
+        }
+    }
+
+    /// The topic `SITE SEND` publishes to when it has no `--topic`.
+    pub fn topic(&self) -> String {
+        self.topic.lock().unwrap().clone()
+    }
+
+    /// Replaces the Session topic.
+    pub fn set_topic(&self, topic: String) {
+        *self.topic.lock().unwrap() = topic;
+    }
 }
 
 impl std::fmt::Debug for KafkaUser {
@@ -96,6 +121,7 @@ impl UserDetail for KafkaUser {}
 /// password, so they are interchangeable.
 pub struct KafkaUserDetailProvider {
     handoff: Handoff,
+    default_topic: String,
 }
 
 impl std::fmt::Debug for KafkaUserDetailProvider {
@@ -122,10 +148,11 @@ impl UserDetailProvider for KafkaUserDetailProvider {
             .ok_or_else(|| {
                 UserDetailError::Generic(format!("no login is waiting for {}", principal.username))
             })?;
-        Ok(KafkaUser {
-            username: principal.username.clone(),
+        Ok(KafkaUser::new(
+            principal.username.clone(),
             producer,
-        })
+            self.default_topic.clone(),
+        ))
     }
 }
 
@@ -150,6 +177,7 @@ impl KafkaAuthenticator {
     pub fn user_detail_provider(&self) -> KafkaUserDetailProvider {
         KafkaUserDetailProvider {
             handoff: Arc::clone(&self.handoff),
+            default_topic: self.config.default_topic.clone(),
         }
     }
 
@@ -313,6 +341,7 @@ mod tests {
         let user = provider.provide_user_detail(&principal).await.unwrap();
 
         assert_eq!(user.username, "alice");
+        assert_eq!(user.topic(), "test-topic");
         let metadata = user
             .producer
             .client()

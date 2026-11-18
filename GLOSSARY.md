@@ -16,6 +16,10 @@ _Avoid_: Sign-in, local authentication
 One logged-in FTP connection, which publishes to Kafka as the identity established at Login.
 _Avoid_: Connection (ambiguous with the Kafka connection)
 
+**Session topic**:
+The Kafka topic a Session's `SITE SEND` publishes to when it has no `--topic`. It starts as the configured `default_topic`, can be changed with `SITE TOPIC <topic>` to any topic that exists on the cluster, and lasts only for that Session.
+_Avoid_: Current topic, default topic (that is the configured starting value)
+
 **Security protocol**:
 How the bridge talks to the Kafka cluster: `PLAINTEXT` (no authentication) or `SASL_PLAINTEXT` (SASL authentication, no encryption). Encrypted protocols are out of scope for now.
 _Avoid_: Auth mode

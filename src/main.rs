@@ -7,7 +7,7 @@ mod storage;
 use auth::KafkaAuthenticator;
 use clap::Parser;
 use config::Config;
-use kafka::{KafkaSendHandler, SecurityProtocol};
+use kafka::{KafkaSendHandler, KafkaTopicHandler, KafkaTopicsHandler, SecurityProtocol};
 use libunftp::ServerBuilder;
 use server_config::LogLevel;
 use slog::{o, Drain};
@@ -47,7 +47,7 @@ async fn main() -> std::process::ExitCode {
         );
     }
 
-    let authenticator = KafkaAuthenticator::new(kafka_config.clone(), logger.clone());
+    let authenticator = KafkaAuthenticator::new(kafka_config, logger.clone());
     let user_detail_provider = authenticator.user_detail_provider();
 
     let server =
@@ -56,7 +56,9 @@ async fn main() -> std::process::ExitCode {
             .logger(logger.clone())
             .greeting("This is a test FTP server")
             .passive_ports(50000..=65535)
-            .site_command("send", KafkaSendHandler::new(kafka_config))
+            .site_command("send", KafkaSendHandler)
+            .site_command("topics", KafkaTopicsHandler)
+            .site_command("topic", KafkaTopicHandler)
             .build()
         {
             Ok(server) => server,

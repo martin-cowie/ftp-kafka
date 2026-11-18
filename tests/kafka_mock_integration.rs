@@ -56,6 +56,85 @@ fn site_send_attaches_headers_in_the_order_given() {
     );
 }
 
+#[test]
+fn site_topic_reports_default_topic_on_a_fresh_session() {
+    let kafka = MockKafka::start();
+    let server = kafka.ftp_server();
+    let mut client = logged_in_client(&server);
+
+    let reply = client.command("SITE TOPIC");
+    assert!(reply.starts_with("200"), "SITE TOPIC failed: {reply}");
+    assert!(reply.contains(TOPIC), "{reply}");
+}
+
+#[test]
+fn site_send_uses_the_session_topic_unless_given_a_topic() {
+    let kafka = MockKafka::start();
+    kafka.create_topic("foo");
+    kafka.create_topic("bar");
+    let server = kafka.ftp_server();
+    let mut client = logged_in_client(&server);
+    client.store("a.txt", b"a");
+
+    let reply = client.command("SITE TOPIC foo");
+    assert!(reply.starts_with("200"), "SITE TOPIC foo failed: {reply}");
+    let reply = client.command("SITE TOPIC");
+    assert!(reply.contains("foo"), "{reply}");
+
+    let reply = client.command("SITE SEND a.txt");
+    assert!(reply.starts_with('2'), "SITE SEND failed: {reply}");
+    assert_eq!(
+        kafka.consume_one_from("foo").payload(),
+        Some(b"a".as_slice())
+    );
+
+    let reply = client.command("SITE SEND --topic bar a.txt");
+    assert!(reply.starts_with('2'), "SITE SEND --topic failed: {reply}");
+    assert_eq!(
+        kafka.consume_one_from("bar").payload(),
+        Some(b"a".as_slice())
+    );
+}
+
+#[test]
+fn session_topic_lasts_only_for_its_session() {
+    let kafka = MockKafka::start();
+    kafka.create_topic("foo");
+    let server = kafka.ftp_server();
+    let mut first = logged_in_client(&server);
+    first.command("SITE TOPIC foo");
+
+    let mut second = logged_in_client(&server);
+    let reply = second.command("SITE TOPIC");
+    assert!(reply.contains(TOPIC), "{reply}");
+}
+
+#[test]
+fn site_topic_refuses_a_topic_that_does_not_exist() {
+    let kafka = MockKafka::start();
+    let server = kafka.ftp_server();
+    let mut client = logged_in_client(&server);
+
+    let reply = client.command("SITE TOPIC no-such-topic");
+    assert!(reply.starts_with('5'), "expected a 5xx reply: {reply}");
+    let reply = client.command("SITE TOPIC");
+    assert!(reply.contains(TOPIC), "{reply}");
+}
+
+#[test]
+fn site_topics_lists_the_clusters_topics_one_per_line() {
+    let kafka = MockKafka::start();
+    kafka.create_topic("foo");
+    let server = kafka.ftp_server();
+    let mut client = logged_in_client(&server);
+
+    let reply = client.command("SITE TOPICS");
+    assert!(reply.starts_with("200-"), "SITE TOPICS failed: {reply}");
+    let lines: Vec<&str> = reply.lines().map(str::trim).collect();
+    assert!(lines.contains(&"foo"), "{reply}");
+    assert!(lines.contains(&TOPIC), "{reply}");
+}
+
 /// A single-broker mock cluster with one single-partition topic, `TOPIC`.
 struct MockKafka {
     cluster: MockCluster<'static, rdkafka::producer::DefaultProducerContext>,
@@ -82,8 +161,20 @@ impl MockKafka {
         ))
     }
 
+    /// Creates a further single-partition topic.
+    fn create_topic(&self, topic: &str) {
+        self.cluster
+            .create_topic(topic, 1, 1)
+            .expect("failed to create a mock topic");
+    }
+
     /// Reads the first message on `TOPIC`, failing the test after ten seconds.
     fn consume_one(&self) -> OwnedMessage {
+        self.consume_one_from(TOPIC)
+    }
+
+    /// Reads the first message on `topic`, failing the test after ten seconds.
+    fn consume_one_from(&self, topic: &str) -> OwnedMessage {
         let consumer: BaseConsumer = ClientConfig::new()
             .set("bootstrap.servers", self.cluster.bootstrap_servers())
             .set("group.id", "ftp-kafka-mock-test")
@@ -91,7 +182,7 @@ impl MockKafka {
             .expect("failed to create Kafka consumer");
         let mut partitions = TopicPartitionList::new();
         partitions
-            .add_partition_offset(TOPIC, 0, Offset::Beginning)
+            .add_partition_offset(topic, 0, Offset::Beginning)
             .unwrap();
         consumer.assign(&partitions).unwrap();
 
@@ -101,7 +192,7 @@ impl MockKafka {
                 return message.detach();
             }
         }
-        panic!("timed out waiting for a message on {TOPIC}");
+        panic!("timed out waiting for a message on {topic}");
     }
 }
 

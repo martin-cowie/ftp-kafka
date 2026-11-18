@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use clap::Parser;
 use libunftp::options::{Reply, ReplyCode, SiteCommandContext, SiteCommandHandler};
 use rdkafka::message::{Header, OwnedHeaders};
-use rdkafka::producer::FutureRecord;
+use rdkafka::producer::{FutureRecord, Producer};
 use serde::Deserialize;
 use std::time::Duration;
 use tokio::io::AsyncReadExt;
@@ -19,7 +19,7 @@ use crate::storage::MemStorage;
 pub struct KafkaConfig {
     /// Comma-separated `host:port` list, passed to librdkafka as `bootstrap.servers`.
     pub brokers: String,
-    /// Topic used when `SITE SEND` has no `--topic`.
+    /// Each Session's starting topic, used when `SITE SEND` has no `--topic`.
     pub default_topic: String,
     /// How long to wait for a message's delivery.
     pub message_timeout_ms: u64,
@@ -125,7 +125,7 @@ impl KafkaConfig {
 #[derive(Parser, Debug)]
 #[command(no_binary_name = true)]
 struct SendArgs {
-    /// Kafka topic to publish to (defaults to the configured default_topic)
+    /// Kafka topic to publish to (defaults to the Session topic)
     #[arg(long)]
     topic: Option<String>,
 
@@ -185,16 +185,44 @@ fn make_headers(pairs: &[(String, String)]) -> OwnedHeaders {
 
 // MARK: Implementation
 
-#[derive(Debug)]
-pub struct KafkaSendHandler {
-    config: KafkaConfig,
+/// How long `SITE TOPICS` and `SITE TOPIC <topic>` wait for the cluster's metadata.
+const METADATA_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Splits a SITE command's arguments as a shell would.
+fn split_arguments(raw: &str) -> Result<Vec<String>, Reply> {
+    shlex::split(raw).ok_or_else(|| {
+        Reply::new(
+            ReplyCode::ParameterSyntaxError,
+            "Unbalanced quotes in arguments",
+        )
+    })
 }
 
-impl KafkaSendHandler {
-    pub fn new(config: KafkaConfig) -> Self {
-        KafkaSendHandler { config }
-    }
+/// Lists the topics on the cluster, as seen with the Session's Kafka credentials.
+///
+/// Internal topics, whose names start with `__` (such as `__consumer_offsets`),
+/// are left out. The names come back sorted.
+async fn list_topics(user: &KafkaUser) -> Result<Vec<String>, Reply> {
+    let producer = user.producer.clone();
+    let metadata = tokio::task::spawn_blocking(move || {
+        producer.client().fetch_metadata(None, METADATA_TIMEOUT)
+    })
+    .await
+    .map_err(|e| Reply::new(ReplyCode::LocalError, &format!("Cannot list topics: {e}")))?
+    .map_err(|e| Reply::new(ReplyCode::LocalError, &format!("Cannot list topics: {e}")))?;
+    let mut topics: Vec<String> = metadata
+        .topics()
+        .iter()
+        .filter(|topic| topic.error().is_none() && !topic.name().starts_with("__"))
+        .map(|topic| topic.name().to_string())
+        .collect();
+    topics.sort();
+    Ok(topics)
 }
+
+/// `SITE SEND`: publishes uploaded files to Kafka.
+#[derive(Debug, Default)]
+pub struct KafkaSendHandler;
 
 #[async_trait]
 impl SiteCommandHandler<MemStorage, KafkaUser> for KafkaSendHandler {
@@ -204,13 +232,14 @@ impl SiteCommandHandler<MemStorage, KafkaUser> for KafkaSendHandler {
             Ok(args) => args,
             Err(reply) => return reply,
         };
-        let topic = args.topic.as_deref().unwrap_or(&self.config.default_topic);
 
         // Prepare args to get file content
         let Some(user) = context.user.as_ref() else {
             return Reply::new(ReplyCode::NotLoggedIn, "Not logged in");
         };
 
+        let topic = args.topic.clone().unwrap_or_else(|| user.topic());
+        let topic = topic.as_str();
         let producer = &user.producer;
 
         // Send each file as a discrete message
@@ -260,6 +289,84 @@ impl SiteCommandHandler<MemStorage, KafkaUser> for KafkaSendHandler {
     }
 }
 
+/// `SITE TOPICS`: lists the topics on the cluster, one per line.
+#[derive(Debug, Default)]
+pub struct KafkaTopicsHandler;
+
+#[async_trait]
+impl SiteCommandHandler<MemStorage, KafkaUser> for KafkaTopicsHandler {
+    async fn handle(&self, context: &SiteCommandContext<MemStorage, KafkaUser>) -> Reply {
+        match split_arguments(&context.arguments) {
+            Ok(args) if args.is_empty() => {}
+            Ok(_) => {
+                return Reply::new(
+                    ReplyCode::ParameterSyntaxError,
+                    "SITE TOPICS takes no arguments",
+                )
+            }
+            Err(reply) => return reply,
+        }
+        let Some(user) = context.user.as_ref() else {
+            return Reply::new(ReplyCode::NotLoggedIn, "Not logged in");
+        };
+        let topics = match list_topics(user).await {
+            Ok(topics) => topics,
+            Err(reply) => return reply,
+        };
+        let mut lines = Vec::with_capacity(topics.len() + 2);
+        lines.push(format!("{} topic(s):", topics.len()));
+        lines.extend(topics);
+        lines.push("End of topics".to_string());
+        Reply::new_multiline(ReplyCode::CommandOkay, lines)
+    }
+}
+
+/// `SITE TOPIC [<topic>]`: reports or sets the Session topic.
+#[derive(Debug, Default)]
+pub struct KafkaTopicHandler;
+
+#[async_trait]
+impl SiteCommandHandler<MemStorage, KafkaUser> for KafkaTopicHandler {
+    async fn handle(&self, context: &SiteCommandContext<MemStorage, KafkaUser>) -> Reply {
+        let args = match split_arguments(&context.arguments) {
+            Ok(args) if args.len() <= 1 => args,
+            Ok(_) => {
+                return Reply::new(
+                    ReplyCode::ParameterSyntaxError,
+                    "Usage: SITE TOPIC [<topic>]",
+                )
+            }
+            Err(reply) => return reply,
+        };
+        let Some(user) = context.user.as_ref() else {
+            return Reply::new(ReplyCode::NotLoggedIn, "Not logged in");
+        };
+        let Some(topic) = args.into_iter().next() else {
+            return Reply::new(
+                ReplyCode::CommandOkay,
+                &format!("Session topic is {}", user.topic()),
+            );
+        };
+
+        // Validate against the cluster rather than rely on auto-creation.
+        let topics = match list_topics(user).await {
+            Ok(topics) => topics,
+            Err(reply) => return reply,
+        };
+        if !topics.contains(&topic) {
+            return Reply::new(
+                ReplyCode::FileError,
+                &format!("Topic {topic} does not exist"),
+            );
+        }
+        user.set_topic(topic.clone());
+        Reply::new(
+            ReplyCode::CommandOkay,
+            &format!("Session topic set to {topic}"),
+        )
+    }
+}
+
 // MARK: Tests
 
 #[cfg(test)]
@@ -282,10 +389,7 @@ mod tests {
             .set("bootstrap.servers", "127.0.0.1:1")
             .create_with_context(crate::auth::AuthContext::default())
             .unwrap();
-        KafkaUser {
-            username: "alice".to_string(),
-            producer,
-        }
+        KafkaUser::new("alice".to_string(), producer, "test-topic".to_string())
     }
 
     fn context(
@@ -303,17 +407,6 @@ mod tests {
         }
     }
 
-    fn config() -> KafkaConfig {
-        KafkaConfig {
-            brokers: "localhost:9092".to_string(),
-            default_topic: "test-topic".to_string(),
-            message_timeout_ms: 5000,
-            auth_timeout_ms: 5000,
-            security_protocol: SecurityProtocol::Plaintext,
-            sasl_mechanism: None,
-        }
-    }
-
     fn is_code(reply: &Reply, expected: ReplyCode) -> bool {
         matches!(reply, Reply::CodeAndMsg { code, .. } if *code == expected)
             || matches!(reply, Reply::MultiLine { code, .. } if *code == expected)
@@ -322,22 +415,60 @@ mod tests {
     #[tokio::test]
     async fn handle_rejects_missing_file_names_without_touching_storage_or_kafka() {
         let ctx = context("", None, MemStorage::new());
-        let reply = KafkaSendHandler::new(config()).handle(&ctx).await;
+        let reply = KafkaSendHandler.handle(&ctx).await;
         assert!(is_code(&reply, ReplyCode::ParameterSyntaxError));
     }
 
     #[tokio::test]
     async fn handle_rejects_when_not_logged_in() {
         let ctx = context("hello.txt", None, MemStorage::new());
-        let reply = KafkaSendHandler::new(config()).handle(&ctx).await;
+        let reply = KafkaSendHandler.handle(&ctx).await;
         assert!(is_code(&reply, ReplyCode::NotLoggedIn));
     }
 
     #[tokio::test]
     async fn handle_reports_missing_files_per_name_without_a_reachable_broker() {
         let ctx = context("missing.txt", Some(session_user()), MemStorage::new());
-        let reply = KafkaSendHandler::new(config()).handle(&ctx).await;
+        let reply = KafkaSendHandler.handle(&ctx).await;
         assert!(is_code(&reply, ReplyCode::LocalError));
+    }
+
+    #[tokio::test]
+    async fn topic_reports_the_session_topic() {
+        let ctx = context("", Some(session_user()), MemStorage::new());
+        let reply = KafkaTopicHandler.handle(&ctx).await;
+        let Reply::CodeAndMsg { code, msg } = reply else {
+            panic!("expected a single-line reply, got {reply:?}");
+        };
+        assert_eq!(code, ReplyCode::CommandOkay);
+        assert!(msg.contains("test-topic"), "{msg}");
+    }
+
+    #[tokio::test]
+    async fn topic_rejects_more_than_one_argument() {
+        let ctx = context("a b", Some(session_user()), MemStorage::new());
+        let reply = KafkaTopicHandler.handle(&ctx).await;
+        assert!(is_code(&reply, ReplyCode::ParameterSyntaxError));
+    }
+
+    #[tokio::test]
+    async fn topic_and_topics_reject_when_not_logged_in() {
+        let ctx = context("", None, MemStorage::new());
+        assert!(is_code(
+            &KafkaTopicHandler.handle(&ctx).await,
+            ReplyCode::NotLoggedIn
+        ));
+        assert!(is_code(
+            &KafkaTopicsHandler.handle(&ctx).await,
+            ReplyCode::NotLoggedIn
+        ));
+    }
+
+    #[tokio::test]
+    async fn topics_rejects_arguments() {
+        let ctx = context("extra", Some(session_user()), MemStorage::new());
+        let reply = KafkaTopicsHandler.handle(&ctx).await;
+        assert!(is_code(&reply, ReplyCode::ParameterSyntaxError));
     }
 
     #[test]
