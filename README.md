@@ -160,6 +160,15 @@ To check coverage (via [cargo-llvm-cov](https://github.com/taiki-e/cargo-llvm-co
 cargo llvm-cov --show-missing-lines
 ```
 
+## Pre-push checks
+
+Once per clone, enable the pre-push hook, which runs the same `cargo fmt --check` and
+`cargo clippy --all-targets -- -D warnings` as CI:
+
+```sh
+git config core.hooksPath .githooks
+```
+
 ## Implementation notes
 
 `SITE SEND`, `SITE TOPICS` and `SITE TOPIC` are implemented with `SiteCommandHandler`s registered via
