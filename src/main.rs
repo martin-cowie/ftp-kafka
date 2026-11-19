@@ -3,6 +3,7 @@ mod config;
 mod kafka;
 mod server_config;
 mod storage;
+mod topics;
 
 use auth::KafkaAuthenticator;
 use clap::Parser;
@@ -13,6 +14,7 @@ use server_config::LogLevel;
 use slog::{o, Drain};
 use std::sync::Arc;
 use storage::MemStorage;
+use topics::{TopicHandler, TopicsHandler};
 
 #[derive(Parser)]
 struct Cli {
@@ -56,7 +58,9 @@ async fn main() -> std::process::ExitCode {
             .logger(logger.clone())
             .greeting("This is a test FTP server")
             .passive_ports(50000..=65535)
-            .site_command("send", KafkaSendHandler::new(kafka_config))
+            .site_command("send", KafkaSendHandler)
+            .site_command("topics", TopicsHandler)
+            .site_command("topic", TopicHandler)
             .build()
         {
             Ok(server) => server,
